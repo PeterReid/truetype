@@ -1684,7 +1684,7 @@ pub struct Edge {
     y0: f32,
     x1: f32,
     y1: f32,
-   invert: isize,
+    invert: bool,
 }
 
 pub struct ActiveEdge {
@@ -1737,23 +1737,23 @@ static stbtt__active_edge *stbtt__new_active(stbtt__hheap *hh, stbtt__edge *e, i
 // #elif STBTT_RASTERIZER_VERSION == 2
 pub unsafe fn new_active(
     hh: *mut Hheap,
-    e: *mut Edge,
+    e: &Edge,
     off_x: isize,
     start_point: f32
 ) -> *mut ActiveEdge {
    let z: *mut ActiveEdge = hheap_alloc(
        hh, size_of::<ActiveEdge>())
         as *mut ActiveEdge;
-   let dxdy: f32 = ((*e).x1 - (*e).x0) / ((*e).y1 - (*e).y0);
+   let dxdy: f32 = (e.x1 - e.x0) / (e.y1 - e.y0);
    //STBTT_assert(e->y0 <= start_point);
    if z == null_mut() { return z; }
    (*z).fdx = dxdy;
    (*z).fdy = if dxdy != 0.0 { 1.0/dxdy } else { 0.0 };
-   (*z).fx = (*e).x0 + dxdy * (start_point - (*e).y0);
+   (*z).fx = e.x0 + dxdy * (start_point - e.y0);
    (*z).fx -= off_x as f32;
-   (*z).direction = if (*e).invert != 0 { 1.0 } else { -1.0 };
-   (*z).sy = (*e).y0;
-   (*z).ey = (*e).y1;
+   (*z).direction = if e.invert { 1.0 } else { -1.0 };
+   (*z).sy = e.y0;
+   (*z).ey = e.y1;
    (*z).next = null_mut();
    return z;
 }
@@ -2143,8 +2143,7 @@ pub unsafe fn fill_active_edges_new(
 // directly AA rasterize edges w/o supersampling
 pub unsafe fn rasterize_sorted_edges(
     result: *mut Bitmap,
-    mut e: *mut Edge,
-    n: isize,
+    e: &[Edge],
     _vsubsample: isize,
     off_x: isize,
     off_y: isize
@@ -2170,7 +2169,7 @@ pub unsafe fn rasterize_sorted_edges(
    scanline2 = scanline.offset((*result).w);
 
    y = off_y;
-   (*e.offset(n)).y0 = (off_y + (*result).h) as f32 + 1.0;
+   let mut edge_iter = e.iter().peekable();
 
    while j < (*result).h {
       // find center of pixel for this scanline
@@ -2198,16 +2197,16 @@ pub unsafe fn rasterize_sorted_edges(
       }
 
       // insert all edges that start before the bottom of this scanline
-      while (*e).y0 <= scan_y_bottom {
-         if (*e).y0 != (*e).y1 {
+      while edge_iter.peek().map(|e| e.y0 <= scan_y_bottom).unwrap_or(false) {
+         let e = edge_iter.next().unwrap(); // we just peeked and got something, so we know an element exists.
+         if e.y0 != e.y1 {
             let z: *mut ActiveEdge = new_active(
-                &mut hh, e, off_x, scan_y_top);
+                &mut hh, &e, off_x, scan_y_top);
             STBTT_assert!((*z).ey >= scan_y_top);
             // insert at front
             (*z).next = active;
             active = z;
          }
-         e = e.offset(1);
       }
 
       // now process all active edges
@@ -2375,7 +2374,6 @@ unsafe fn rasterize_(
     invert: isize
 ) {
    let y_scale_inv: f32 = if invert != 0 { -scale_y } else { scale_y };
-   let e: *mut Edge;
    let mut n: isize;
    let mut j: isize;
    let mut m: isize;
@@ -2395,10 +2393,7 @@ unsafe fn rasterize_(
       n = n + *wcount.offset(i);
    }
 
-   e = STBTT_malloc!(size_of::<Edge>() * (n+1) as usize)
-        as *mut Edge; // add an extra one as a sentinel
-   if e == null_mut() { return };
-   n = 0;
+   let mut e = Vec::with_capacity(n as usize);
 
    m=0;
    for i in 0..windings {
@@ -2406,24 +2401,23 @@ unsafe fn rasterize_(
       m += *wcount.offset(i);
       j = *wcount.offset(i)-1;
       for k in 0..(*wcount.offset(i)) {
-         let mut a: isize=k;
-         let mut b: isize =j;
          // skip the edge if horizontal
          if (*p.offset(j)).y != (*p.offset(k)).y {
             // add edge from j to k to the list
-            (*e.offset(n)).invert = 0;
-            if if invert != 0 { (*p.offset(j)).y > (*p.offset(k)).y }
-               else { (*p.offset(j)).y < (*p.offset(k)).y } {
-               (*e.offset(n)).invert = 1;
-               a=j;
-               b=k;
-            }
-            (*e.offset(n)).x0 = (*p.offset(a)).x * scale_x + shift_x;
-            (*e.offset(n)).y0 = ((*p.offset(a)).y * y_scale_inv + shift_y) * vsubsample as f32;
-            (*e.offset(n)).x1 = (*p.offset(b)).x * scale_x + shift_x;
-            (*e.offset(n)).y1 = ((*p.offset(b)).y * y_scale_inv + shift_y) * vsubsample as f32;
+            let edge_invert = if invert != 0 {
+                    (*p.offset(j)).y > (*p.offset(k)).y
+                } else {
+                    (*p.offset(j)).y < (*p.offset(k)).y
+                };
+            let (a, b) = if edge_invert { (j, k) } else { (k, j) };
 
-            n += 1;
+            e.push(Edge{
+                invert: edge_invert,
+                x0: (*p.offset(a)).x * scale_x + shift_x,
+                y0: ((*p.offset(a)).y * y_scale_inv + shift_y) * vsubsample as f32,
+                x1: (*p.offset(b)).x * scale_x + shift_x,
+                y1: ((*p.offset(b)).y * y_scale_inv + shift_y) * vsubsample as f32,
+            });
          }
          j = k;
       }
@@ -2431,12 +2425,10 @@ unsafe fn rasterize_(
 
    // now sort the edges by their highest point (should snap to integer, and then by x)
    //STBTT_sort(e, n, sizeof(e[0]), stbtt__edge_compare);
-   sort_edges(e, n);
+   sort_edges(e.as_mut_ptr(), n);
 
    // now, traverse the scanlines and find the intersections on each scanline, use xor winding rule
-   rasterize_sorted_edges(result, e, n, vsubsample, off_x, off_y);
-
-   STBTT_free!(e as *mut c_void);
+   rasterize_sorted_edges(result, &e[..], vsubsample, off_x, off_y);
 }
 
 pub unsafe fn add_point(
