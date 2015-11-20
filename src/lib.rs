@@ -2371,9 +2371,9 @@ unsafe fn rasterize_(
     shift_y: f32,
     off_x: isize,
     off_y: isize,
-    invert: isize
+    invert: bool
 ) {
-   let y_scale_inv: f32 = if invert != 0 { -scale_y } else { scale_y };
+   let y_scale_inv: f32 = if invert { -scale_y } else { scale_y };
    let mut n: isize;
    let mut j: isize;
    let mut m: isize;
@@ -2404,7 +2404,7 @@ unsafe fn rasterize_(
          // skip the edge if horizontal
          if (*p.offset(j)).y != (*p.offset(k)).y {
             // add edge from j to k to the list
-            let edge_invert = if invert != 0 {
+            let edge_invert = if invert {
                     (*p.offset(j)).y > (*p.offset(k)).y
                 } else {
                     (*p.offset(j)).y < (*p.offset(k)).y
@@ -2583,7 +2583,7 @@ pub unsafe fn rasterize(
     x_off: isize,
     y_off: isize,
     // if non-zero, vertically flip shape
-    invert: isize
+    invert: bool
 ) {
    let scale: f32 = if scale_x > scale_y { scale_y } else { scale_x };
    let mut winding_count: isize = 0;
@@ -2653,7 +2653,7 @@ pub unsafe fn get_glyph_bitmap_subpixel(
 
          rasterize(&mut gbm, 0.35,
              vertices, num_verts, scale_x, scale_y, shift_x, shift_y, ix0, iy0,
-              1);
+             true);
       }
    }
    STBTT_free!(vertices as *mut c_void);
@@ -2706,7 +2706,7 @@ pub unsafe fn make_glyph_bitmap_subpixel(
 
    if gbm.w != 0 && gbm.h != 0 {
       rasterize(&mut gbm, 0.35, vertices, num_verts,
-          scale_x, scale_y, shift_x, shift_y, ix0,iy0, 1);
+          scale_x, scale_y, shift_x, shift_y, ix0,iy0, true);
    }
 
    STBTT_free!(vertices as *mut c_void);
