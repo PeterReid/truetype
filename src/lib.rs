@@ -531,6 +531,14 @@ impl<'a> FontInfo<'a> {
         Ok(BigEndian::read_u16(&self.data[offset..offset+2]))
     }
 
+    fn read_i16(&self, offset: usize) -> Result<i16, Error> {
+        if self.data.len()<2 || offset >= self.data.len() {
+            return Err(Error::Malformed);
+        }
+
+        Ok(BigEndian::read_i16(&self.data[offset..offset+2]))
+    }
+
     fn find_required_table(&self, tag: &[u8; 4]) -> Result<usize, Error> {
         match try!(self.find_table(tag)) {
             Some(offset) => Ok(offset),
@@ -551,6 +559,18 @@ impl<'a> FontInfo<'a> {
             }
         }
         return Ok(None);
+    }
+
+    // computes a scale factor to produce a font whose "height" is 'pixels' tall.
+    // Height is measured as the distance from the highest ascender to the lowest
+    // descender; in other words, it's equivalent to calling stbtt_GetFontVMetrics
+    // and computing:
+    //       scale = pixels / (ascent - descent)
+    // so if you prefer to measure height by the ascent only, use a similar calculation.
+    pub fn scale_for_pixel_height(&self, height: f32) -> f32 {
+        let fheight = self.read_i16(self.hhea + 4).ok().unwrap_or(0)
+            - self.read_i16(self.hhea + 6).ok().unwrap_or(0);
+        return height / fheight as f32;
     }
 }
 
@@ -1495,21 +1515,6 @@ pub unsafe fn get_font_bounding_box(
    *y0 = ttSHORT!((*info).data.as_ptr().offset((*info).head as isize + 38)) as isize;
    *x1 = ttSHORT!((*info).data.as_ptr().offset((*info).head as isize + 40)) as isize;
    *y1 = ttSHORT!((*info).data.as_ptr().offset((*info).head as isize + 42)) as isize;
-}
-
-// computes a scale factor to produce a font whose "height" is 'pixels' tall.
-// Height is measured as the distance from the highest ascender to the lowest
-// descender; in other words, it's equivalent to calling stbtt_GetFontVMetrics
-// and computing:
-//       scale = pixels / (ascent - descent)
-// so if you prefer to measure height by the ascent only, use a similar calculation.
-pub unsafe fn scale_for_pixel_height(
-    info: *const FontInfo,
-    height: f32
-) -> f32 {
-   let fheight = ttSHORT!((*info).data.as_ptr().offset((*info).hhea as isize + 4))
-        - ttSHORT!((*info).data.as_ptr().offset((*info).hhea as isize + 6));
-   return height / fheight as f32;
 }
 
 // computes a scale factor to produce a font whose EM size is mapped to
@@ -2828,7 +2833,7 @@ pub unsafe fn bake_font_bitmap(
    y=1;
    bottom_y = 1;
 
-   scale = scale_for_pixel_height(&f, pixel_height);
+   scale = f.scale_for_pixel_height(pixel_height);
 
    for i in 0..num_chars {
       let mut advance: isize = 0;
@@ -3274,7 +3279,7 @@ pub unsafe fn pack_font_ranges_gather_rects(
    k=0;
    for i in 0..num_ranges {
       let fh: f32 = (*ranges.offset(i)).font_size;
-      let scale: f32 = if fh > 0.0 { scale_for_pixel_height(info, fh) }
+      let scale: f32 = if fh > 0.0 { (*info).scale_for_pixel_height(fh) }
         else { scale_for_mapping_em_to_pixels(info, -fh) };
       (*ranges.offset(i)).h_oversample = (*spc).h_oversample as u8;
       (*ranges.offset(i)).v_oversample = (*spc).v_oversample as u8;
@@ -3322,7 +3327,7 @@ pub unsafe fn pack_font_ranges_render_into_rects(
    for i in 0..num_ranges {
       let fh: f32 = (*ranges.offset(i)).font_size;
       let scale: f32 = if fh > 0.0 {
-            scale_for_pixel_height(info, fh)
+            (*info).scale_for_pixel_height(fh)
           } else { scale_for_mapping_em_to_pixels(info, -fh) };
       let recip_h: f32;
       let recip_v: f32;
