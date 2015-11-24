@@ -452,6 +452,9 @@ pub struct BoundingBox {
 pub enum Error {
     Malformed,
     MissingTable,
+    InvalidGlyphIndex,
+    UnknownGlyphMapFormat,
+    BadGlyph,
 }
 
 impl<'a> FontInfo<'a> {
@@ -531,15 +534,23 @@ impl<'a> FontInfo<'a> {
     }
 
     fn read_u16(&self, offset: usize) -> Result<u16, Error> {
-        if self.data.len()<2 || offset >= self.data.len() {
+        if self.data.len()<2 || offset >= self.data.len()-2 {
             return Err(Error::Malformed);
         }
 
         Ok(BigEndian::read_u16(&self.data[offset..offset+2]))
     }
 
+    fn read_u32(&self, offset: usize) -> Result<u32, Error> {
+        if self.data.len()<4 || offset >= self.data.len()-4 {
+            return Err(Error::Malformed);
+        }
+
+        Ok(BigEndian::read_u32(&self.data[offset..offset+4]))
+    }
+
     fn read_i16(&self, offset: usize) -> Result<i16, Error> {
-        if self.data.len()<2 || offset >= self.data.len() {
+        if self.data.len()<2 || offset > self.data.len()-2 {
             return Err(Error::Malformed);
         }
 
@@ -581,20 +592,34 @@ impl<'a> FontInfo<'a> {
     }
 
     // as above, but takes one or more glyph indices for greater efficiency
-    pub fn get_glyph_box(&self, glyph_index: isize) -> Result<Option<BoundingBox>, Error> {
-        let g = unsafe { get_glyph_offset(self, glyph_index) } as isize;
-        if g < 0 {
-            return Ok(None)
-        }
+    pub fn get_glyph_box(&self, glyph_index: usize) -> Result<BoundingBox, Error> {
+        let g = try!(self.get_glyph_offset(glyph_index));
 
-        Ok(Some(BoundingBox{
+        Ok(BoundingBox{
             x0: try!(self.read_i16(g as usize + 2)) as isize,
             y0: try!(self.read_i16(g as usize + 4)) as isize,
             x1: try!(self.read_i16(g as usize + 6)) as isize,
             y1: try!(self.read_i16(g as usize + 8)) as isize,
-        }))
+        })
     }
 
+    pub fn get_glyph_offset(&self, glyph_index: usize) -> Result<usize, Error> {
+        let g1: usize;
+        let g2: usize;
+
+        if glyph_index >= self.num_glyphs { return Err(Error::InvalidGlyphIndex); } // glyph index out of range
+        if self.index_to_loc_format >= 2 { return Err(Error::UnknownGlyphMapFormat); } // unknown index->glyph map format
+
+        if self.index_to_loc_format == 0 {
+            g1 = self.glyf + try!(self.read_u16(self.loca + glyph_index * 2)) as usize * 2;
+            g2 = self.glyf + try!(self.read_u16(self.loca + glyph_index * 2 + 2)) as usize * 2;
+        } else {
+            g1 = self.glyf + try!(self.read_u32(self.loca + glyph_index * 4)) as usize;
+            g2 = self.glyf + try!(self.read_u32(self.loca + glyph_index * 4 + 4)) as usize;
+        }
+
+        return if g1==g2 { Err(Error::BadGlyph) } else { Ok(g1) }; // if length is 0, return -1
+    }
 }
 
 fn prefix_is_tag(bs: &[u8], tag: &[u8; 4]) -> bool {
@@ -1014,7 +1039,7 @@ pub unsafe fn get_codepoint_shape(
     unicode_codepoint: isize,
      vertices: *mut *mut Vertex
 ) -> isize {
-   return get_glyph_shape(info, find_glyph_index(info, unicode_codepoint), vertices);
+   return get_glyph_shape(info, find_glyph_index(info, unicode_codepoint) as usize, vertices);
 }
 
 pub unsafe fn stbtt_setvertex(
@@ -1032,45 +1057,25 @@ pub unsafe fn stbtt_setvertex(
    (*v).cy = cy as i16;
 }
 
-pub unsafe fn get_glyph_offset(
-    info: *const FontInfo,
-    glyph_index: isize
-) -> isize {
-   let g1: isize;
-   let g2: isize;
-
-   if glyph_index >= (*info).num_glyphs as isize { return -1; } // glyph index out of range
-   if (*info).index_to_loc_format >= 2   { return -1; } // unknown index->glyph map format
-
-   if (*info).index_to_loc_format == 0 {
-      g1 = (*info).glyf as isize + ttUSHORT!((*info).data.as_ptr().offset((*info).loca as isize + glyph_index * 2)) as isize * 2;
-      g2 = (*info).glyf as isize + ttUSHORT!((*info).data.as_ptr().offset((*info).loca as isize + glyph_index * 2 + 2)) as isize * 2;
-   } else {
-      g1 = (*info).glyf as isize + ttULONG!((*info).data.as_ptr().offset((*info).loca as isize + glyph_index * 4)) as isize;
-      g2 = (*info).glyf as isize + ttULONG!((*info).data.as_ptr().offset((*info).loca as isize + glyph_index * 4 + 4)) as isize;
-   }
-
-   return if g1==g2 { -1 } else { g1 }; // if length is 0, return -1
-}
-
 // Gets the bounding box of the visible part of the glyph, in unscaled coordinates
 pub unsafe fn get_codepoint_box(
     info: *const FontInfo,
     codepoint: isize,
-) -> Result<Option<BoundingBox>, Error> {
-    (*info).get_glyph_box(find_glyph_index(info,codepoint))
+) -> Result<BoundingBox, Error> {
+    (*info).get_glyph_box(find_glyph_index(info,codepoint) as usize)
 }
 
 // returns non-zero if nothing is drawn for this glyph
 pub unsafe fn is_glyph_empty(
     info: *const FontInfo,
-    glyph_index: isize
-) -> isize {
-   let number_of_contours: i16;
-   let g: isize = get_glyph_offset(info, glyph_index);
-   if g < 0 { return 1; }
-   number_of_contours = ttSHORT!((*info).data.as_ptr().offset(g));
-   return if number_of_contours == 0 { 0 } else { 1 };
+    glyph_index: usize
+) -> bool {
+    if let Ok(glyph_offset) = (*info).get_glyph_offset(glyph_index) {
+        let number_of_contours = ttSHORT!((*info).data.as_ptr().offset(glyph_offset as isize));
+        number_of_contours != 0
+    } else {
+        true
+    }
 }
 
 pub unsafe fn close_shape(
@@ -1116,19 +1121,21 @@ pub unsafe fn close_shape(
 // its x,y, using cx,cy as the bezier control point.
 pub unsafe fn get_glyph_shape(
     info: *const FontInfo,
-    glyph_index: isize,
+    glyph_index: usize,
     pvertices: *mut *mut Vertex
 ) -> isize {
    let number_of_contours: i16;
    let end_pts_of_contours: *const u8;
    let data: *const u8 = (*info).data.as_ptr();
    let mut vertices: *mut Vertex=null_mut();
-   let mut num_vertices: isize =0;
-   let g: isize = get_glyph_offset(info, glyph_index);
+   let mut num_vertices: isize = 0;
+   let g: isize = if let Ok(g) = (*info).get_glyph_offset(glyph_index) {
+      g as isize
+   } else {
+      return 0;
+   };
 
    *pvertices = null_mut();
-
-   if g < 0 { return 0; }
 
    number_of_contours = ttSHORT!(data.offset(g));
 
@@ -1343,7 +1350,7 @@ pub unsafe fn get_glyph_shape(
          n = STBTT_sqrt!(mtx[2]*mtx[2] + mtx[3]*mtx[3]) as f32;
 
          // Get indexed glyph.
-         comp_num_verts = get_glyph_shape(info, gidx as isize, &mut comp_verts);
+         comp_num_verts = get_glyph_shape(info, gidx as usize, &mut comp_verts);
          if comp_num_verts > 0 {
             // Transform vertices.
             for i in 0..comp_num_verts {
@@ -1546,13 +1553,13 @@ pub unsafe fn free_shape(_info: *const FontInfo, v: *mut Vertex)
 
 pub unsafe fn get_glyph_bitmap_box_subpixel(
     font: *const FontInfo,
-    glyph: isize,
+    glyph: usize,
     scale_x: f32,
     scale_y: f32,
     shift_x: f32,
     shift_y: f32
 ) -> BoundingBox {
-    if let Ok(Some(bbox)) = (*font).get_glyph_box(glyph) {
+    if let Ok(bbox) = (*font).get_glyph_box(glyph) {
         // move to integral bboxes (treating pixels as little squares, what pixels get touched)?
         BoundingBox{
             x0: STBTT_ifloor!( bbox.x0 as f32 * scale_x + shift_x),
@@ -1568,7 +1575,7 @@ pub unsafe fn get_glyph_bitmap_box_subpixel(
 
 pub unsafe fn get_glyph_bitmap_box(
     font: *const FontInfo,
-    glyph: isize,
+    glyph: usize,
     scale_x: f32,
     scale_y: f32,
 ) -> BoundingBox {
@@ -1585,7 +1592,7 @@ pub unsafe fn get_codepoint_bitmap_box_subpixel(
     shift_x: f32,
     shift_y: f32
 ) -> BoundingBox {
-    get_glyph_bitmap_box_subpixel(font, find_glyph_index(font,codepoint), scale_x, scale_y,shift_x,shift_y)
+    get_glyph_bitmap_box_subpixel(font, find_glyph_index(font,codepoint) as usize, scale_x, scale_y,shift_x,shift_y)
 }
 
 // get the bbox of the bitmap centered around the glyph origin; so the
@@ -2601,7 +2608,7 @@ pub unsafe fn get_glyph_bitmap_subpixel(
     yoff: *mut isize
 ) -> *mut u8 {
    let mut vertices: *mut Vertex = null_mut();
-   let num_verts: isize = get_glyph_shape(info, glyph, &mut vertices);
+   let num_verts: isize = get_glyph_shape(info, glyph as usize, &mut vertices);
 
    if scale_x == 0.0 { scale_x = scale_y; }
    if scale_y == 0.0 {
@@ -2609,7 +2616,7 @@ pub unsafe fn get_glyph_bitmap_subpixel(
       scale_y = scale_x;
    }
 
-   let bounding_box = get_glyph_bitmap_box_subpixel(info, glyph, scale_x, scale_y,
+   let bounding_box = get_glyph_bitmap_box_subpixel(info, glyph as usize, scale_x, scale_y,
        shift_x, shift_y);
 
    // now we get the size
@@ -2670,9 +2677,9 @@ pub unsafe fn make_glyph_bitmap_subpixel(
     glyph: isize
 ) {
    let mut vertices: *mut Vertex = null_mut();
-   let num_verts: isize = get_glyph_shape(info, glyph, &mut vertices);
+   let num_verts: isize = get_glyph_shape(info, glyph as usize, &mut vertices);
 
-   let bounding_box = get_glyph_bitmap_box_subpixel(info, glyph, scale_x, scale_y,
+   let bounding_box = get_glyph_bitmap_box_subpixel(info, glyph as usize, scale_x, scale_y,
        shift_x, shift_y);
    let mut gbm: Bitmap = Bitmap
    {
@@ -2815,7 +2822,7 @@ pub unsafe fn bake_font_bitmap(
       let gh: isize;
       let g: isize = find_glyph_index(&f, first_char + i);
       get_glyph_hmetrics(&f, g, &mut advance, &mut lsb);
-      let bounding_box = get_glyph_bitmap_box(&f, g, scale,scale);
+      let bounding_box = get_glyph_bitmap_box(&f, g as usize, scale,scale);
       gw = bounding_box.x1-bounding_box.x0;
       gh = bounding_box.y1-bounding_box.y0;
       if x + gw + 1 >= pw {
@@ -3259,7 +3266,7 @@ pub unsafe fn pack_font_ranges_gather_rects(
                 *(*ranges.offset(i)).array_of_unicode_codepoints.offset(j)
              };
          let glyph: isize = find_glyph_index(info, codepoint);
-         let bounding_box = get_glyph_bitmap_box_subpixel(info,glyph,
+         let bounding_box = get_glyph_bitmap_box_subpixel(info,glyph as usize,
                                          scale * (*spc).h_oversample as f32,
                                          scale * (*spc).v_oversample as f32,
                                          0.0,0.0);
@@ -3324,7 +3331,7 @@ pub unsafe fn pack_font_ranges_render_into_rects(
             (*r).w -= pad;
             (*r).h -= pad;
             get_glyph_hmetrics(info, glyph, &mut advance, &mut lsb);
-            let bounding_box = get_glyph_bitmap_box(info, glyph,
+            let bounding_box = get_glyph_bitmap_box(info, glyph as usize,
                                     scale * (*spc).h_oversample as f32,
                                     scale * (*spc).v_oversample as f32);
             make_glyph_bitmap_subpixel(info,
