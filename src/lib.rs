@@ -856,13 +856,13 @@ macro_rules! stbtt_tag {
 
 // #define stbtt_tag(p,str)           stbtt_tag4(p,str[0],str[1],str[2],str[3])
 
-pub unsafe fn isfont(font: *const u8) -> isize {
+pub unsafe fn isfont(font: *const u8) -> bool {
    // check the version number
-   if stbtt_tag4!(font, '1' as u8,0,0,0) { return 1; } // TrueType 1
-   if stbtt_tag!(font, "typ1".as_ptr())  { return 1; } // TrueType with type 1 font -- we don't support this!
-   if stbtt_tag!(font, "OTTO".as_ptr())  { return 1; } // OpenType with CFF
-   if stbtt_tag4!(font, 0,1,0,0) { return 1; } // OpenType 1.0
-   return 0;
+   if stbtt_tag4!(font, '1' as u8,0,0,0) { return true; } // TrueType 1
+   if stbtt_tag!(font, "typ1".as_ptr())  { return true; } // TrueType with type 1 font -- we don't support this!
+   if stbtt_tag!(font, "OTTO".as_ptr())  { return true; } // OpenType with CFF
+   if stbtt_tag4!(font, 0,1,0,0) { return true; } // OpenType 1.0
+   return false;
 }
 
 // @OPTIMIZE: binary search
@@ -893,7 +893,7 @@ pub unsafe fn get_font_offset_for_index(
     index: isize
 ) -> i32 {
    // if it's just a font, there's only one valid index
-   if isfont(font_collection) != 0 {
+   if isfont(font_collection) {
       return if index == 0 { 0 } else { -1 };
    }
 
@@ -3625,7 +3625,7 @@ pub unsafe fn matchpair(
     nlen: i32,
     target_id: i32,
     next_id: i32
-) -> isize {
+) -> bool {
     let count: u32 = ttUSHORT!(fc.offset(nm as isize +2)) as u32;
     let string_offset: i32 = nm as i32 + ttUSHORT!(fc.offset(nm as isize +4)) as i32;
 
@@ -3656,20 +3656,20 @@ pub unsafe fn matchpair(
                   off = ttUSHORT!(fc.offset(loc as isize +12+10)) as i32;
                   if slen == 0 {
                      if matchlen == nlen {
-                        return 1;
+                        return true;
                      }
                   } else if matchlen < nlen && *name.offset(matchlen as isize) == ' ' as u8 {
                      matchlen += 1;
                      if compare_utf8_to_utf16_bigendian(
                          (name.offset(matchlen as isize)) as *mut u8, (nlen - matchlen) as isize,
                          (fc.offset(string_offset as isize + off as isize)) as *mut u8,slen as isize) != 0 {
-                        return 1;
+                        return true;
                     }
                   }
                } else {
                   // if nothing immediately following
                   if matchlen == nlen {
-                     return 1;
+                     return true;
                   }
                }
             }
@@ -3678,7 +3678,7 @@ pub unsafe fn matchpair(
          // @TODO handle other encodings
       }
    }
-   return 0;
+   return false;
 }
 
 pub unsafe fn matches(
@@ -3686,33 +3686,33 @@ pub unsafe fn matches(
     offset: u32,
     name: *mut u8,
     flags: i32
-) -> isize {
+) -> bool {
     let nlen: i32 = STBTT_strlen(name as *mut c_char) as i32;
     let nm: u32;
     let hd: u32;
-   if isfont(fc.offset(offset as isize)) == 0 { return 0; }
+   if !isfont(fc.offset(offset as isize)) { return false; }
 
    // check italics/bold/underline flags in macStyle...
    if flags != 0 {
       hd = find_table(fc, offset, CString::new("head").unwrap().as_ptr());
-      if (ttUSHORT!(fc.offset(hd as isize + 44)) & 7) != (flags as u16 & 7) { return 0; }
+      if (ttUSHORT!(fc.offset(hd as isize + 44)) & 7) != (flags as u16 & 7) { return false; }
    }
 
    nm = find_table(fc, offset, CString::new("name").unwrap().as_ptr());
-   if nm == 0 { return 0; }
+   if nm == 0 { return false; }
 
    if flags != 0 {
       // if we checked the macStyle flags, then just check the family and ignore the subfamily
-      if matchpair(fc, nm, name, nlen, 16, -1) != 0 { return 1; }
-      if matchpair(fc, nm, name, nlen,  1, -1) != 0 { return 1; }
-      if matchpair(fc, nm, name, nlen,  3, -1) != 0 { return 1; }
+      if matchpair(fc, nm, name, nlen, 16, -1) { return true; }
+      if matchpair(fc, nm, name, nlen,  1, -1) { return true; }
+      if matchpair(fc, nm, name, nlen,  3, -1) { return true; }
    } else {
-      if matchpair(fc, nm, name, nlen, 16, 17) != 0 { return 1; }
-      if matchpair(fc, nm, name, nlen,  1,  2) != 0 { return 1; }
-      if matchpair(fc, nm, name, nlen,  3, -1) != 0 { return 1; }
+      if matchpair(fc, nm, name, nlen, 16, 17) { return true; }
+      if matchpair(fc, nm, name, nlen,  1,  2) { return true; }
+      if matchpair(fc, nm, name, nlen,  3, -1) { return true; }
    }
 
-   return 0;
+   return false;
 }
 
 // returns the offset (not index) of the font that matches, or -1 if none
@@ -3728,7 +3728,7 @@ pub unsafe fn find_matching_font(
       let off: i32 = get_font_offset_for_index(font_collection, i);
       if off < 0 { return off; }
       if matches(font_collection as *mut u8,
-            off as u32, name_utf8 as *mut u8, flags) != 0 {
+            off as u32, name_utf8 as *mut u8, flags) {
          return off;
       }
    }
