@@ -28,7 +28,7 @@ fn expect_glyph(letter: char, expected: String) {
         if result != expected {
             println!("\n{:?}", expected);
             println!("{:?}", result);
-            panic!("The `A` is malformed.\n\n\nExpected:\n{}|\n\nGot:\n{}|", result, expected);
+            panic!("The `{}` is malformed.\n\n\nExpected:\n{}\n\nGot:\n{}", letter, expected, result);
         }
     }
 }
