@@ -2364,7 +2364,7 @@ pub struct Point
 unsafe fn rasterize_(
     result: *mut Bitmap,
     pts: *const Point,
-    wcount: *mut isize,
+    wcount: *const isize,
     windings: isize,
     scale_x: f32,
     scale_y: f32,
@@ -2477,34 +2477,28 @@ pub unsafe fn tesselate_curve(
 pub unsafe fn flatten_curves(
     vertices: &[Vertex],
     objspace_flatness: f32,
-    contour_lengths: *mut *mut isize,
-    num_contours: *mut usize,
-) -> Vec<Point> {
+) -> (Vec<Point>, Vec<usize>) {
     let mut points: Vec<Point> = Vec::new();
 
     let objspace_flatness_squared: f32 = objspace_flatness * objspace_flatness;
     let mut start: usize =0;
-    let mut n: isize;
 
     // count how many "moves" there are to get the contour count
+    let num_contours = vertices.iter().filter(|v| v.type_ == Cmd::Move).count();
 
-    *num_contours = vertices.iter().filter(|v| v.type_ == Cmd::Move).count();
-    if *num_contours == 0 { return points }
-
-    *contour_lengths = STBTT_malloc!(size_of::<isize>() * *num_contours) as *mut isize;
+    let mut contour_lengths = Vec::with_capacity(num_contours);
+    if num_contours == 0 { return (points, contour_lengths) }
 
     let mut x: f32=0.0;
     let mut y: f32=0.0;
 
-    n= -1;
     for vertex in vertices.iter() {
         match vertex.type_ {
             Cmd::Move => {
                 // start the next contour
-                if n >= 0 {
-                    *(*contour_lengths).offset(n) = (points.len() - start) as isize;
+                if points.len() > 0 {
+                    contour_lengths.push(points.len() - start);
                 }
-                n += 1;
                 start = points.len();
 
                 x = vertex.x as f32;
@@ -2526,9 +2520,9 @@ pub unsafe fn flatten_curves(
             }
         }
     }
-    *(*contour_lengths).offset(n) = (points.len() - start) as isize;
+    contour_lengths.push(points.len() - start);
 
-    points
+    (points, contour_lengths)
 }
 
 // rasterize a shape with quadratic beziers into a bitmap
@@ -2552,16 +2546,13 @@ pub unsafe fn rasterize(
     invert: bool
 ) {
     let scale: f32 = if scale_x > scale_y { scale_y } else { scale_x };
-    let mut winding_count: usize = 0;
-    let mut winding_lengths: *mut isize = null_mut();
-    let windings: Vec<Point> = flatten_curves(vertices,
-        flatness_in_pixels / scale, &mut winding_lengths, &mut winding_count);
+    let (windings, winding_lengths): (Vec<Point>, Vec<usize>) = flatten_curves(vertices,
+        flatness_in_pixels / scale);
 
-    if winding_count > 0 {
-        rasterize_(result, windings.as_ptr(), winding_lengths, winding_count as isize,
+    if winding_lengths.len() > 0 {
+        rasterize_(result, windings.as_ptr(), winding_lengths.as_ptr() as *const isize, winding_lengths.len() as isize,
             scale_x, scale_y, shift_x, shift_y, x_off, y_off, invert);
     }
-    STBTT_free!(winding_lengths as *mut c_void);
 }
 
 // frees the bitmap allocated below
