@@ -2444,7 +2444,7 @@ pub unsafe fn add_point(
 }
 
 // tesselate until threshhold p is happy... @TODO warped to compensate for non-linear stretching
-pub unsafe fn tesselate_curve(
+pub fn tesselate_curve(
     points: &mut Vec<Point>,
     x0: f32,
     y0: f32,
@@ -2474,7 +2474,7 @@ pub unsafe fn tesselate_curve(
 }
 
 // returns number of contours
-pub unsafe fn flatten_curves(
+pub fn flatten_curves(
     vertices: &[Vertex],
     objspace_flatness: f32,
 ) -> (Vec<Point>, Vec<usize>) {
