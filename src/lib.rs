@@ -2363,9 +2363,8 @@ pub struct Point
 
 unsafe fn rasterize_(
     result: *mut Bitmap,
-    pts: *const Point,
-    wcount: *const isize,
-    windings: isize,
+    pts: &[Point],
+    winding_lengths: &[usize],
     scale_x: f32,
     scale_y: f32,
     shift_x: f32,
@@ -2374,10 +2373,8 @@ unsafe fn rasterize_(
     off_y: isize,
     invert: bool
 ) {
-   let y_scale_inv: f32 = if invert { -scale_y } else { scale_y };
-   let mut n: isize;
-   let mut j: isize;
-   let mut m: isize;
+    let y_scale_inv: f32 = if invert { -scale_y } else { scale_y };
+    let mut m: usize;
 // TODO: Conditional compilation.
 // #if STBTT_RASTERIZER_VERSION == 1
 //    int vsubsample = result->h < 8 ? 15 : 5;
@@ -2386,50 +2383,49 @@ unsafe fn rasterize_(
 // #else
 //   #error "Unrecognized value of STBTT_RASTERIZER_VERSION"
 // #endif
-   // vsubsample should divide 255 evenly; otherwise we won't reach full opacity
+    // vsubsample should divide 255 evenly; otherwise we won't reach full opacity
 
-   // now we have to blow out the windings into explicit edge lists
-   n = 0;
-   for i in 0..windings {
-      n = n + *wcount.offset(i);
-   }
+    // now we have to blow out the windings into explicit edge lists
+    let n: usize = winding_lengths.iter().fold(0, |a,b| a+b); // TODO: sum() once it is stable
 
-   let mut e = Vec::with_capacity(n as usize);
+    let mut e = Vec::with_capacity(n);
 
-   m=0;
-   for i in 0..windings {
-      let p: *const Point = pts.offset(m);
-      m += *wcount.offset(i);
-      j = *wcount.offset(i)-1;
-      for k in 0..(*wcount.offset(i)) {
-         // skip the edge if horizontal
-         if (*p.offset(j)).y != (*p.offset(k)).y {
-            // add edge from j to k to the list
-            let edge_invert = if invert {
-                    (*p.offset(j)).y > (*p.offset(k)).y
+    m=0;
+    for winding_length in winding_lengths.iter() {
+        let winding_points = &pts[m..m+*winding_length];
+
+        m += *winding_length;
+
+        let mut prev: &Point = &winding_points[winding_points.len()-1];
+        for next in winding_points.iter() {
+            // skip the edge if horizontal
+            if prev.y != next.y {
+                // add edge from `prev` to `next` to the list
+                let edge_invert = if invert {
+                    prev.y > next.y
                 } else {
-                    (*p.offset(j)).y < (*p.offset(k)).y
+                    prev.y < next.y
                 };
-            let (a, b) = if edge_invert { (j, k) } else { (k, j) };
+                let (a, b) = if edge_invert { (prev, next) } else { (next, prev) };
 
-            e.push(Edge{
-                invert: edge_invert,
-                x0: (*p.offset(a)).x * scale_x + shift_x,
-                y0: ((*p.offset(a)).y * y_scale_inv + shift_y) * vsubsample as f32,
-                x1: (*p.offset(b)).x * scale_x + shift_x,
-                y1: ((*p.offset(b)).y * y_scale_inv + shift_y) * vsubsample as f32,
-            });
-         }
-         j = k;
-      }
-   }
+                e.push(Edge{
+                    invert: edge_invert,
+                    x0: a.x * scale_x + shift_x,
+                    y0: (a.y * y_scale_inv + shift_y) * vsubsample as f32,
+                    x1: b.x * scale_x + shift_x,
+                    y1: (b.y * y_scale_inv + shift_y) * vsubsample as f32,
+                });
+            }
+            prev = next;
+        }
+    }
 
-   // now sort the edges by their highest point (should snap to integer, and then by x)
-   //STBTT_sort(e, n, sizeof(e[0]), stbtt__edge_compare);
-   sort_edges(e.as_mut_ptr(), n);
+    // now sort the edges by their highest point (should snap to integer, and then by x)
+    //STBTT_sort(e, n, sizeof(e[0]), stbtt__edge_compare);
+    sort_edges(e.as_mut_ptr(), n as isize);
 
-   // now, traverse the scanlines and find the intersections on each scanline, use xor winding rule
-   rasterize_sorted_edges(result, &e[..], vsubsample, off_x, off_y);
+    // now, traverse the scanlines and find the intersections on each scanline, use xor winding rule
+    rasterize_sorted_edges(result, &e[..], vsubsample, off_x, off_y);
 }
 
 pub unsafe fn add_point(
@@ -2550,7 +2546,7 @@ pub unsafe fn rasterize(
         flatness_in_pixels / scale);
 
     if winding_lengths.len() > 0 {
-        rasterize_(result, windings.as_ptr(), winding_lengths.as_ptr() as *const isize, winding_lengths.len() as isize,
+        rasterize_(result, &windings[..], &winding_lengths[..],
             scale_x, scale_y, shift_x, shift_y, x_off, y_off, invert);
     }
 }
