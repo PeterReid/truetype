@@ -400,16 +400,15 @@ pub struct PackRange {
 
 // this is an opaque structure that you shouldn't mess with which holds
 // all the context needed from PackBegin to PackEnd.
-pub struct PackContext {
-   user_allocator_context: *const (),
+pub struct PackContext<'a> {
    pack_info: *mut c_void,
-   width: isize,
-   height: isize,
+   //width: isize,
+   //height: isize,
    stride_in_bytes: isize,
    padding: isize,
    h_oversample: usize,
    v_oversample: usize,
-   pixels: *mut u8,
+   pixels: &'a mut [u8],
    nodes: *mut c_void,
 }
 
@@ -670,12 +669,12 @@ pub struct Vertex {
 }
 
 // @TODO: don't expose this structure
-pub struct Bitmap
+pub struct Bitmap<'a>
 {
     w: isize,
     h: isize,
     stride: isize,
-    pixels: *mut u8,
+    pixels: &'a mut [u8],
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -2142,8 +2141,8 @@ pub unsafe fn fill_active_edges_new(
 }
 
 // directly AA rasterize edges w/o supersampling
-pub unsafe fn rasterize_sorted_edges(
-    result: *mut Bitmap,
+unsafe fn rasterize_sorted_edges(
+    result: &mut Bitmap,
     e: &[Edge],
     _vsubsample: isize,
     off_x: isize,
@@ -2161,26 +2160,26 @@ pub unsafe fn rasterize_sorted_edges(
    let scanline: *mut f32;
    let scanline2: *mut f32;
 
-   if (*result).w > 64 {
-      scanline = STBTT_malloc!(((*result).w*2+1) as usize * size_of::<f32>()) as *mut f32;
+   if result.w > 64 {
+      scanline = STBTT_malloc!((result.w*2+1) as usize * size_of::<f32>()) as *mut f32;
    } else {
       scanline = scanline_data.as_mut_ptr();
    }
 
-   scanline2 = scanline.offset((*result).w);
+   scanline2 = scanline.offset(result.w);
 
    y = off_y;
    let mut edge_iter = e.iter().peekable();
 
-   while j < (*result).h {
+   while j < result.h {
       // find center of pixel for this scanline
       let scan_y_top: f32 = y as f32 + 0.0;
       let scan_y_bottom: f32 = y as f32 + 1.0;
       let mut step: *mut *mut ActiveEdge = &mut active;
 
-      memset(scanline as *mut c_void, 0, (*result).w as usize * size_of::<f32>());
+      memset(scanline as *mut c_void, 0, result.w as usize * size_of::<f32>());
       memset(scanline2 as *mut c_void, 0,
-          ((*result).w+1) as usize * size_of::<f32>());
+          (result.w+1) as usize * size_of::<f32>());
 
       // update all active edges;
       // remove all active edges that terminate before the top of this scanline
@@ -2212,13 +2211,13 @@ pub unsafe fn rasterize_sorted_edges(
 
       // now process all active edges
       if active != null_mut() {
-         fill_active_edges_new(scanline, scanline2.offset(1), (*result).w,
+         fill_active_edges_new(scanline, scanline2.offset(1), result.w,
             active, scan_y_top);
       }
 
       {
          let mut sum: f32 = 0.0;
-         for i in 0..(*result).w {
+         for i in 0..result.w {
             let mut k: f32;
             let mut m: isize;
             sum += *scanline2.offset(i);
@@ -2226,7 +2225,7 @@ pub unsafe fn rasterize_sorted_edges(
             k = k.abs() as f32 * 255.0 as f32 + 0.5;
             m = k as isize;
             if m > 255 { m = 255; }
-            *(*result).pixels.offset(j*(*result).stride + i) = m as u8;
+            result.pixels[(j*result.stride + i) as usize] = m as u8;
          }
       }
       // advance all the edges
@@ -2362,7 +2361,7 @@ pub struct Point
 }
 
 unsafe fn rasterize_(
-    result: *mut Bitmap,
+    result: &mut Bitmap,
     pts: &[Point],
     winding_lengths: &[usize],
     scale_x: f32,
@@ -2524,7 +2523,7 @@ pub fn flatten_curves(
 // rasterize a shape with quadratic beziers into a bitmap
 pub unsafe fn rasterize(
     // 1-channel bitmap to draw into
-    result: *mut Bitmap,
+    result: &mut Bitmap,
     // allowable error of curve in pixels
     flatness_in_pixels: f32,
     // array of vertices defining shape
@@ -2568,45 +2567,45 @@ pub unsafe fn get_glyph_bitmap_subpixel(
     height: *mut isize,
     xoff: *mut isize,
     yoff: *mut isize
-) -> *mut u8 {
-   let mut vertices: *mut Vertex = null_mut();
-   let num_verts: isize = get_glyph_shape(info, glyph as usize, &mut vertices);
+) -> Vec<u8> {
+    let mut vertices: *mut Vertex = null_mut();
+    let num_verts: isize = get_glyph_shape(info, glyph as usize, &mut vertices);
 
-   if scale_x == 0.0 { scale_x = scale_y; }
-   if scale_y == 0.0 {
-      if scale_x == 0.0 { return null_mut(); }
-      scale_y = scale_x;
-   }
+    if scale_x == 0.0 { scale_x = scale_y; }
+    if scale_y == 0.0 {
+        if scale_x == 0.0 { return Vec::new(); }
+        scale_y = scale_x;
+    }
 
-   let bounding_box = get_glyph_bitmap_box_subpixel(info, glyph as usize, scale_x, scale_y,
-       shift_x, shift_y);
+    let bounding_box = get_glyph_bitmap_box_subpixel(info, glyph as usize, scale_x, scale_y,
+    shift_x, shift_y);
 
-   // now we get the size
-   let mut gbm = Bitmap
-   {
-       w: (bounding_box.x1 - bounding_box.x0),
-       h: (bounding_box.y1 - bounding_box.y0),
-       stride: 0,
-       pixels: null_mut(),
-   };
+    // now we get the size
+    let w = bounding_box.x1 - bounding_box.x0; 
+    let h = bounding_box.y1 - bounding_box.y0;
 
-   if width != null_mut() { *width  = gbm.w; }
-   if height != null_mut() { *height = gbm.h; }
-   if xoff != null_mut() { *xoff   = bounding_box.x0; }
-   if yoff != null_mut() { *yoff   = bounding_box.y0; }
+    if w==0 || h==0 {
+        return Vec::new();
+    }
+    
+    let mut pixels = vec![0u8; (w*h) as usize];
+    
+    if width != null_mut() { *width  = w; }
+    if height != null_mut() { *height = h; }
+    if xoff != null_mut() { *xoff   = bounding_box.x0; }
+    if yoff != null_mut() { *yoff   = bounding_box.y0; }
 
-   if gbm.w != 0 && gbm.h != 0 {
-      gbm.pixels = STBTT_malloc!((gbm.w * gbm.h) as usize) as *mut u8;
-      if gbm.pixels != null_mut() {
-         gbm.stride = gbm.w;
+    rasterize(&mut Bitmap{
+            w: w,
+            h: h,
+            stride: w,
+            pixels: &mut pixels[..],
+        },
+        0.35,
+        slice::from_raw_parts(vertices, num_verts as usize), scale_x, scale_y, shift_x, shift_y, bounding_box.x0, bounding_box.y0,
+        true);
 
-         rasterize(&mut gbm, 0.35,
-             slice::from_raw_parts(vertices, num_verts as usize), scale_x, scale_y, shift_x, shift_y, bounding_box.x0, bounding_box.y0,
-             true);
-      }
-   }
-   STBTT_free!(vertices as *mut c_void);
-   return gbm.pixels;
+    pixels
 }
 
 // the following functions are equivalent to the above functions, but operate
@@ -2621,14 +2620,14 @@ pub unsafe fn get_glyph_bitmap(
     height: *mut isize,
     xoff: *mut isize,
     yoff: *mut isize
-) -> *const u8 {
+) -> Vec<u8> {
    return get_glyph_bitmap_subpixel(info, scale_x, scale_y,
        0.0, 0.0, glyph, width, height, xoff, yoff);
 }
 
 pub unsafe fn make_glyph_bitmap_subpixel(
     info: *const FontInfo,
-    output: *mut u8,
+    output: &mut [u8],
     out_w: isize,
     out_h: isize,
     out_stride: isize,
@@ -2661,7 +2660,7 @@ pub unsafe fn make_glyph_bitmap_subpixel(
 
 pub unsafe fn make_glyph_bitmap(
     info: *const FontInfo,
-    output: *mut u8,
+    output: &mut [u8],
     out_w: isize,
     out_h: isize,
     out_stride: isize,
@@ -2686,16 +2685,16 @@ pub unsafe fn get_codepoint_bitmap_subpixel(
     height: *mut isize,
     xoff: *mut isize,
     yoff: *mut isize
-) -> *mut u8 {
-   return get_glyph_bitmap_subpixel(info, scale_x,
-       scale_y,shift_x,shift_y, find_glyph_index(info,codepoint), width,height,xoff,yoff);
+) -> Vec<u8> {
+    get_glyph_bitmap_subpixel(info, scale_x,
+        scale_y,shift_x,shift_y, find_glyph_index(info,codepoint), width,height,xoff,yoff)
 }
 
 // same as stbtt_MakeCodepointBitmap, but you can specify a subpixel
 // shift for the character
 pub unsafe fn make_codepoint_bitmap_subpixel(
     info: *const FontInfo,
-    output: *mut u8,
+    output: &mut [u8],
     out_w: isize,
     out_h: isize,
     out_stride: isize,
@@ -2726,9 +2725,9 @@ pub unsafe fn get_codepoint_bitmap(
     height: *mut isize,
     xoff: *mut isize,
     yoff: *mut isize
-) -> *mut u8 {
-   return get_codepoint_bitmap_subpixel(info, scale_x, scale_y,
-       0.0,0.0, codepoint, width,height,xoff,yoff);
+) -> Vec<u8> {
+   get_codepoint_bitmap_subpixel(info, scale_x, scale_y,
+       0.0,0.0, codepoint, width,height,xoff,yoff)
 }
 
 // the same as stbtt_GetCodepointBitmap, but you pass in storage for the bitmap
@@ -2737,7 +2736,7 @@ pub unsafe fn get_codepoint_bitmap(
 // width and height and positioning info for it first.
 pub unsafe fn make_codepoint_bitmap(
     info: *const FontInfo,
-    output: *mut u8,
+    output: &mut [u8],
     out_w: isize,
     out_h: isize,
     out_stride: isize,
@@ -2761,7 +2760,7 @@ pub unsafe fn make_codepoint_bitmap(
 pub unsafe fn bake_font_bitmap(
     data: &[u8], offset: usize,  // font location (use offset=0 for plain .ttf)
     pixel_height: f32,                     // height of font in pixels
-    pixels: *mut u8, pw: isize, ph: isize,  // bitmap to be filled in
+    pixels: &mut [u8], pw: isize, ph: isize,  // bitmap to be filled in
     first_char: isize, num_chars: isize,          // characters to bake
     chardata: *mut BakedChar
 ) -> Result<isize, Error> {
@@ -2770,7 +2769,10 @@ pub unsafe fn bake_font_bitmap(
     let mut y: isize;
     let mut bottom_y: isize;
     let f: FontInfo = try!(FontInfo::new_with_offset(data, offset));
-   memset(pixels as *mut _ as *mut c_void, 0, (pw*ph) as usize); // background of 0 around pixels
+    for pixel in pixels.iter_mut().take((pw*ph) as usize) {
+        *pixel = 0;
+    }
+   
    x=1;
    y=1;
    bottom_y = 1;
@@ -2796,7 +2798,7 @@ pub unsafe fn bake_font_bitmap(
       }
       STBTT_assert!(x+gw < pw);
       STBTT_assert!(y+gh < ph);
-      make_glyph_bitmap(&f, pixels.offset(x+y*pw), gw,gh,pw, scale,scale, g);
+      make_glyph_bitmap(&f, &mut pixels[(x+y*pw) as usize..], gw,gh,pw, scale,scale, g);
       (*chardata.offset(i)).x0 = x as u16;
       (*chardata.offset(i)).y0 = y as u16;
       (*chardata.offset(i)).x1 = (x + gw) as u16;
@@ -2970,45 +2972,37 @@ pub unsafe fn stbrp_pack_rects(
 //
 // Returns 0 on failure, 1 on success.
 pub unsafe fn pack_begin(
-    spc: *mut PackContext,
-    pixels: *mut u8,
+    pixels: &mut [u8],
     pw: isize,
     ph: isize,
     stride_in_bytes: isize,
     padding: isize,
-    alloc_context: *const ()
-) -> isize
+) -> PackContext
 {
-   let context: *mut Context = STBTT_malloc!(
-       size_of::<Context>()) as *mut Context;
-   let num_nodes: isize = pw - padding;
-   let nodes: *mut Node = STBTT_malloc!(
-       size_of::<Node>() * num_nodes as usize) as *mut Node;
+    let context: *mut Context = STBTT_malloc!(
+        size_of::<Context>()) as *mut Context;
+    let num_nodes: isize = pw - padding;
+    let nodes: *mut Node = STBTT_malloc!(
+        size_of::<Node>() * num_nodes as usize) as *mut Node;
 
-   if context == null_mut() || nodes == null_mut() {
-      if context != null_mut() { STBTT_free!(context as *mut c_void); }
-      if nodes   != null_mut() { STBTT_free!(nodes as *mut c_void); }
-      return 0;
-   }
+    for pixel in pixels.iter_mut().take((pw*ph) as usize) {
+        *pixel = 0;
+    }
 
-   (*spc).user_allocator_context = alloc_context;
-   (*spc).width = pw;
-   (*spc).height = ph;
-   (*spc).pixels = pixels;
-   (*spc).pack_info = context as *mut c_void;
-   (*spc).nodes = nodes as *mut c_void;
-   (*spc).padding = padding;
-   (*spc).stride_in_bytes = if stride_in_bytes != 0 { stride_in_bytes } else { pw };
-   (*spc).h_oversample = 1;
-   (*spc).v_oversample = 1;
+    let spc = PackContext{
+        //width: pw,
+        //height: ph,
+        pixels: pixels,
+        pack_info: context as *mut c_void,
+        nodes: nodes as *mut c_void,
+        padding: padding,
+        stride_in_bytes: if stride_in_bytes != 0 { stride_in_bytes } else { pw },
+        h_oversample: 1,
+        v_oversample: 1,
+    };
+    stbrp_init_target(context, pw-padding, ph-padding, nodes, num_nodes);
 
-   stbrp_init_target(context, pw-padding, ph-padding, nodes, num_nodes);
-
-   if pixels != null_mut() {
-      memset(pixels as *mut c_void, 0, (pw*ph) as usize); // background of 0 around pixels
-   }
-
-   return 1;
+    spc
 }
 
 // Cleans up the packing context and frees all memory.
@@ -3297,7 +3291,7 @@ pub unsafe fn pack_font_ranges_render_into_rects(
                                     scale * (*spc).h_oversample as f32,
                                     scale * (*spc).v_oversample as f32);
             make_glyph_bitmap_subpixel(info,
-                                          (*spc).pixels.offset((*r).x + (*r).y*(*spc).stride_in_bytes),
+                                          &mut (*spc).pixels[((*r).x + (*r).y*(*spc).stride_in_bytes) as usize..],
                                           (*r).w - (*spc).h_oversample as isize +1,
                                           (*r).h - (*spc).v_oversample as isize +1,
                                           (*spc).stride_in_bytes,
@@ -3307,13 +3301,13 @@ pub unsafe fn pack_font_ranges_render_into_rects(
                                           glyph);
 
             if (*spc).h_oversample > 1 {
-               h_prefilter((*spc).pixels.offset((*r).x + (*r).y*(*spc).stride_in_bytes),
+               h_prefilter((*spc).pixels.as_mut_ptr().offset((*r).x + (*r).y*(*spc).stride_in_bytes),
                                   (*r).w, (*r).h, (*spc).stride_in_bytes,
                                   (*spc).h_oversample);
             }
 
             if (*spc).v_oversample > 1 {
-               v_prefilter((*spc).pixels.offset((*r).x + (*r).y*(*spc).stride_in_bytes),
+               v_prefilter((*spc).pixels.as_mut_ptr().offset((*r).x + (*r).y*(*spc).stride_in_bytes),
                                   (*r).w, (*r).h, (*spc).stride_in_bytes,
                                   (*spc).v_oversample);
             }

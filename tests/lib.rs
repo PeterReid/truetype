@@ -18,7 +18,7 @@ fn expect_glyph(letter: char, expected: String) {
         let mut result = String::new();
         for j in 0..h {
             for i in 0..w {
-                result.push([' ', '.', ':', 'i', 'o', 'V', 'M', '@'][((*bitmap.offset(j*w+i))>>5) as usize]);
+                result.push([' ', '.', ':', 'i', 'o', 'V', 'M', '@'][(bitmap[(j*w+i) as usize]>>5) as usize]);
             }
             result.push('\n');
         }
