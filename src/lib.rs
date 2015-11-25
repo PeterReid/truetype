@@ -2363,7 +2363,7 @@ pub struct Point
 
 unsafe fn rasterize_(
     result: *mut Bitmap,
-    pts: *mut Point,
+    pts: *const Point,
     wcount: *mut isize,
     windings: isize,
     scale_x: f32,
@@ -2445,8 +2445,7 @@ pub unsafe fn add_point(
 
 // tesselate until threshhold p is happy... @TODO warped to compensate for non-linear stretching
 pub unsafe fn tesselate_curve(
-    points: *mut Point,
-    num_points: *mut isize,
+    points: &mut Vec<Point>,
     x0: f32,
     y0: f32,
     x1: f32,
@@ -2466,11 +2465,10 @@ pub unsafe fn tesselate_curve(
       return 1;
    }
    if dx*dx+dy*dy > objspace_flatness_squared { // half-pixel error allowed... need to be smaller if AA
-      tesselate_curve(points, num_points, x0,y0, (x0+x1)/2.0,(y0+y1)/2.0, mx,my, objspace_flatness_squared,n+1);
-      tesselate_curve(points, num_points, mx,my, (x1+x2)/2.0,(y1+y2)/2.0, x2,y2, objspace_flatness_squared,n+1);
+      tesselate_curve(points, x0,y0, (x0+x1)/2.0,(y0+y1)/2.0, mx,my, objspace_flatness_squared,n+1);
+      tesselate_curve(points, mx,my, (x1+x2)/2.0,(y1+y2)/2.0, x2,y2, objspace_flatness_squared,n+1);
    } else {
-      add_point(points, *num_points,x2,y2);
-      *num_points = *num_points+1;
+      points.push(Point{x: x2, y: y2});
    }
    return 1;
 }
@@ -2482,86 +2480,61 @@ pub unsafe fn flatten_curves(
     objspace_flatness: f32,
     contour_lengths: *mut *mut isize,
     num_contours: *mut isize,
-) -> *mut Point {
-    let mut points: *mut Point = null_mut();
-    let mut num_points: isize =0;
+) -> Vec<Point> {
+    let mut points: Vec<Point> = Vec::new();
 
-   let objspace_flatness_squared: f32 = objspace_flatness * objspace_flatness;
-   let mut n: isize =0;
-   let mut start: isize =0;
+    let objspace_flatness_squared: f32 = objspace_flatness * objspace_flatness;
+    let mut n: isize =0;
+    let mut start: usize =0;
 
-   // count how many "moves" there are to get the contour count
-   for i in 0..num_verts {
-      if (*vertices.offset(i)).type_ == Cmd::Move {
-         n += 1;
-      }
-   }
+    // count how many "moves" there are to get the contour count
+    for i in 0..num_verts {
+        if (*vertices.offset(i)).type_ == Cmd::Move {
+            n += 1;
+        }
+    }
 
-   *num_contours = n;
-   if n == 0 { return null_mut(); }
+    *num_contours = n;
+    if n == 0 { return points }
 
-   *contour_lengths = STBTT_malloc!(size_of::<isize>() * n as usize) as *mut isize;
+    *contour_lengths = STBTT_malloc!(size_of::<isize>() * n as usize) as *mut isize;
 
-   if *contour_lengths == null_mut() {
-      *num_contours = 0;
-      return null_mut();
-   }
+    let mut x: f32=0.0;
+    let mut y: f32=0.0;
 
-   'error: loop {
-   // make two passes through the points so we don't need to realloc
-   for pass in 0..2 {
-      let mut x: f32=0.0;
-      let mut y: f32=0.0;
-      if pass == 1 {
-         points = STBTT_malloc!(num_points as usize * size_of::<Point>())
-            as *mut Point;
-         if points == null_mut() {
-             break 'error;
-         };
-      }
-      num_points = 0;
-      n= -1;
-      for i in 0..num_verts {
-         match (*vertices.offset(i)).type_ {
+    n= -1;
+    for i in 0..num_verts {
+        match (*vertices.offset(i)).type_ {
             Cmd::Move => {
-               // start the next contour
-               if n >= 0 {
-                  *(*contour_lengths).offset(n) = num_points - start;
-               }
-               n += 1;
-               start = num_points;
+                // start the next contour
+                if n >= 0 {
+                    *(*contour_lengths).offset(n) = (points.len() - start) as isize;
+                }
+                n += 1;
+                start = points.len();
 
-               x = (*vertices.offset(i)).x as f32;
-               y = (*vertices.offset(i)).y as f32;
-               add_point(points, num_points, x,y);
-               num_points += 1;
+                x = (*vertices.offset(i)).x as f32;
+                y = (*vertices.offset(i)).y as f32;
+                points.push(Point{x: x, y: y});
             }
             Cmd::Line => {
-               x = (*vertices.offset(i)).x as f32;
-               y = (*vertices.offset(i)).y as f32;
-               add_point(points, num_points, x, y);
-               num_points += 1;
+                x = (*vertices.offset(i)).x as f32;
+                y = (*vertices.offset(i)).y as f32;
+                points.push(Point{x: x, y: y});
             }
             Cmd::Curve => {
-               tesselate_curve(points, &mut num_points, x,y,
-                                        (*vertices.offset(i)).cx as f32, (*vertices.offset(i)).cy as f32,
-                                        (*vertices.offset(i)).x as f32,  (*vertices.offset(i)).y as f32,
-                                        objspace_flatness_squared, 0);
-               x = (*vertices.offset(i)).x as f32;
-               y = (*vertices.offset(i)).y as f32;
-           }
-         }
-      }
-      *(*contour_lengths).offset(n) = num_points - start;
-   }
-   return points;
-   } // 'error
+                tesselate_curve(&mut points, x,y,
+                    (*vertices.offset(i)).cx as f32, (*vertices.offset(i)).cy as f32,
+                    (*vertices.offset(i)).x as f32,  (*vertices.offset(i)).y as f32,
+                    objspace_flatness_squared, 0);
+                x = (*vertices.offset(i)).x as f32;
+                y = (*vertices.offset(i)).y as f32;
+            }
+        }
+    }
+    *(*contour_lengths).offset(n) = (points.len() - start) as isize;
 
-   STBTT_free!(points as *mut c_void);
-   STBTT_free!(*contour_lengths as *mut c_void);
-   *contour_lengths = null_mut();
-   *num_contours = 0;
-   return null_mut();
+    points
 }
 
 // rasterize a shape with quadratic beziers into a bitmap
@@ -2586,17 +2559,17 @@ pub unsafe fn rasterize(
     // if non-zero, vertically flip shape
     invert: bool
 ) {
-   let scale: f32 = if scale_x > scale_y { scale_y } else { scale_x };
-   let mut winding_count: isize = 0;
-   let mut winding_lengths: *mut isize = null_mut();
-   let windings: *mut Point = flatten_curves(vertices, num_verts,
-       flatness_in_pixels / scale, &mut winding_lengths, &mut winding_count);
-   if windings != null_mut() {
-      rasterize_(result, windings, winding_lengths, winding_count,
-          scale_x, scale_y, shift_x, shift_y, x_off, y_off, invert);
-      STBTT_free!(winding_lengths as *mut c_void);
-      STBTT_free!(windings as *mut c_void);
-   }
+    let scale: f32 = if scale_x > scale_y { scale_y } else { scale_x };
+    let mut winding_count: isize = 0;
+    let mut winding_lengths: *mut isize = null_mut();
+    let windings: Vec<Point> = flatten_curves(vertices, num_verts,
+        flatness_in_pixels / scale, &mut winding_lengths, &mut winding_count);
+
+    if winding_count > 0 {
+        rasterize_(result, windings.as_ptr(), winding_lengths, winding_count,
+            scale_x, scale_y, shift_x, shift_y, x_off, y_off, invert);
+    }
+    STBTT_free!(winding_lengths as *mut c_void);
 }
 
 // frees the bitmap allocated below
