@@ -11,9 +11,7 @@ fn expect_glyph(letter: char, expected: String) {
         let mut w = 0;
         let mut h = 0;
 
-        let offset = get_font_offset_for_index(bs,0).unwrap();
-
-        let font = FontInfo::new_with_offset(&bs[..], offset).ok().expect("Failed to load font");
+        let font = FontInfo::new(&bs[..]).ok().expect("Failed to load font");
         let scale = font.scale_for_pixel_height(s);
         let bitmap = get_codepoint_bitmap(&font, 0.0,scale, letter as isize, &mut w, &mut h, null_mut(),null_mut());
 

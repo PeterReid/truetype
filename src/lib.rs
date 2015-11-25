@@ -459,6 +459,15 @@ pub enum Error {
 }
 
 impl<'a> FontInfo<'a> {
+    /// Initialize a font with the contents of a TTF file
+    pub fn new(data: &[u8]) -> Result<FontInfo, Error> {
+        if !isfont(data) {
+            return Err(Error::Malformed);
+        }
+
+        FontInfo::new_with_offset(data, 0)
+    }
+
     // Given an offset into the file that defines a font, this function builds
     // the necessary cached info for the rest of the system.
     pub fn new_with_offset(data: &[u8], fontstart: usize) -> Result<FontInfo, Error> {
