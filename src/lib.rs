@@ -455,6 +455,7 @@ pub enum Error {
     InvalidGlyphIndex,
     UnknownGlyphMapFormat,
     BadGlyph,
+    InvalidFontIndex,
 }
 
 impl<'a> FontInfo<'a> {
@@ -856,27 +857,27 @@ macro_rules! stbtt_tag {
 
 // #define stbtt_tag(p,str)           stbtt_tag4(p,str[0],str[1],str[2],str[3])
 
-pub unsafe fn isfont(font: *const u8) -> bool {
+pub fn isfont(font: &[u8]) -> bool {
    // check the version number
-   if stbtt_tag4!(font, '1' as u8,0,0,0) { return true; } // TrueType 1
-   if stbtt_tag!(font, "typ1".as_ptr())  { return true; } // TrueType with type 1 font -- we don't support this!
-   if stbtt_tag!(font, "OTTO".as_ptr())  { return true; } // OpenType with CFF
-   if stbtt_tag4!(font, 0,1,0,0) { return true; } // OpenType 1.0
+   if prefix_is_tag(font, &['1' as u8, 0,0,0]) { return true; } // TrueType 1
+   if prefix_is_tag(font, &b"typ1")  { return true; } // TrueType with type 1 font -- we don't support this!
+   if prefix_is_tag(font, &b"OTTO")  { return true; } // OpenType with CFF
+   if prefix_is_tag(font, &[0,1,0,0]) { return true; } // OpenType 1.0
    return false;
 }
 
 // @OPTIMIZE: binary search
 pub unsafe fn find_table(
     data: *const u8,
-    fontstart: u32,
+    fontstart: usize,
     tag: *const c_char
-) -> u32 {
-   let num_tables: i32 = ttUSHORT!(data.offset(fontstart as isize +4)) as i32;
-   let tabledir: u32 = fontstart + 12;
+) -> usize {
+   let num_tables: usize = ttUSHORT!(data.offset(fontstart as isize +4)) as usize;
+   let tabledir = fontstart + 12;
    for i in 0..num_tables {
-      let loc: u32 = tabledir + 16*i as u32;
+      let loc = tabledir + 16*i;
       if stbtt_tag!(data.offset(loc as isize +0), tag as *const u8) {
-         return ttULONG!(data.offset(loc as isize +8));
+         return ttULONG!(data.offset(loc as isize +8)) as usize;
       }
    }
    return 0;
@@ -888,28 +889,28 @@ pub unsafe fn find_table(
 // file will only define one font and it always be at offset 0, so it will
 // return '0' for index 0, and -1 for all other indices. You can just skip
 // this step if you know it's that kind of font.
-pub unsafe fn get_font_offset_for_index(
-    font_collection: *const u8,
-    index: isize
-) -> i32 {
+pub fn get_font_offset_for_index(
+    font_collection: &[u8],
+    index: usize
+) -> Option<usize> {
    // if it's just a font, there's only one valid index
    if isfont(font_collection) {
-      return if index == 0 { 0 } else { -1 };
+      return if index == 0 { Some(0) } else { None };
    }
 
    // check if it's a TTC
-   if stbtt_tag!(font_collection, "ttcf".as_ptr()) {
+   if prefix_is_tag(font_collection, b"ttcf") && font_collection.len()>=16+index*4 {
       // version 1?
-      if ttULONG!(font_collection.offset(4)) == 0x00010000
-       || ttULONG!(font_collection.offset(4)) == 0x00020000 {
-         let n: i32 = ttLONG!(font_collection.offset(8));
-         if index >= n as isize {
-            return -1;
+      let version = BigEndian::read_u32(&font_collection[4..8]);
+      if version == 0x00010000 || version == 0x00020000 {
+         let n: i32 = BigEndian::read_i32(&font_collection[8..12]);
+         if index >= n as usize {
+            return None;
          }
-         return ttULONG!(font_collection.offset(12+index*4)) as i32;
+         return Some(BigEndian::read_u32(&font_collection[12+index*4..16+index*4]) as usize);
       }
    }
-   return -1;
+   return None;
 }
 
 // If you're going to perform multiple operations on the same character
@@ -3395,7 +3396,7 @@ pub unsafe fn pack_font_ranges_pack_rects(
 pub unsafe fn pack_font_ranges(
     spc: *mut PackContext,
     fontdata: &[u8],
-    font_index: isize,
+    font_index: usize,
     ranges: *mut PackRange,
     num_ranges: isize
 ) -> Result<isize, Error>
@@ -3425,7 +3426,12 @@ pub unsafe fn pack_font_ranges(
       return Ok(0);
    }
 
-   let mut info = try!(FontInfo::new_with_offset(fontdata, get_font_offset_for_index(fontdata.as_ptr(),font_index) as usize));
+   let offset = if let Some(offset) = get_font_offset_for_index(fontdata, font_index) {
+      offset
+   } else {
+      return Err(Error::InvalidFontIndex);
+   };
+   let mut info = try!(FontInfo::new_with_offset(fontdata, offset));
 
    n = pack_font_ranges_gather_rects(spc, &mut info, ranges, num_ranges, rects);
 
@@ -3452,7 +3458,7 @@ pub unsafe fn pack_font_ranges(
 pub unsafe fn pack_font_range(
     spc: *mut PackContext,
     fontdata: &[u8],
-    font_index: isize,
+    font_index: usize,
     font_size: f32,
     first_unicode_codepoint_in_range: isize,
     num_chars_in_range: isize,
@@ -3601,14 +3607,14 @@ pub unsafe fn get_font_name_string(
    let count: i32;
    let string_offset: i32;
    let fc: *const u8 = (*font).data.as_ptr();
-   let offset: u32 = (*font).fontstart as u32;
-   let nm: u32 = find_table(fc, offset, CString::new("name").unwrap().as_ptr());
+   let offset = (*font).fontstart;
+   let nm: usize = find_table(fc, offset, CString::new("name").unwrap().as_ptr());
    if nm == 0 { return null(); }
 
    count = ttUSHORT!(fc.offset(nm as isize +2)) as i32;
    string_offset = nm as i32 + ttUSHORT!(fc.offset(nm as isize +4)) as i32;
    for i in 0..count as u32 {
-      let loc: u32 = nm + 6 + 12 * i;
+      let loc: u32 = nm as u32 + 6 + 12 * i;
       if platform_id == ttUSHORT!(fc.offset(loc as isize +0)) as isize && encoding_id == ttUSHORT!(fc.offset(loc as isize +2)) as isize
           && language_id == ttUSHORT!(fc.offset(loc as isize +4)) as isize && name_id == ttUSHORT!(fc.offset(loc as isize +6)) as isize {
          *length = ttUSHORT!(fc.offset(loc as isize +8)) as isize;
@@ -3619,18 +3625,18 @@ pub unsafe fn get_font_name_string(
 }
 
 pub unsafe fn matchpair(
-    fc: *mut u8,
-    nm: u32,
+    fc: *const u8,
+    nm: usize,
     name: *mut u8,
     nlen: i32,
     target_id: i32,
     next_id: i32
 ) -> bool {
-    let count: u32 = ttUSHORT!(fc.offset(nm as isize +2)) as u32;
+    let count = ttUSHORT!(fc.offset(nm as isize +2)) as usize;
     let string_offset: i32 = nm as i32 + ttUSHORT!(fc.offset(nm as isize +4)) as i32;
 
-   for i in 0..count as u32 {
-      let loc: u32 = nm + 6 + 12 * i;
+   for i in 0..count {
+      let loc = nm + 6 + 12 * i;
       let id: i32 = ttUSHORT!(fc.offset(loc as isize +6)) as i32;
       if id == target_id {
          // find the encoding
@@ -3682,34 +3688,40 @@ pub unsafe fn matchpair(
 }
 
 pub unsafe fn matches(
-    fc: *mut u8,
-    offset: u32,
+    fc: &[u8],
+    offset: usize,
     name: *mut u8,
     flags: i32
 ) -> bool {
     let nlen: i32 = STBTT_strlen(name as *mut c_char) as i32;
-    let nm: u32;
-    let hd: u32;
-   if !isfont(fc.offset(offset as isize)) { return false; }
+    let nm: usize;
+    let hd: usize;
+
+    if offset >= fc.len() {
+        return false;
+    }
+
+    let f = &fc[offset..];
+    if !isfont(f) { return false; }
 
    // check italics/bold/underline flags in macStyle...
    if flags != 0 {
-      hd = find_table(fc, offset, CString::new("head").unwrap().as_ptr());
-      if (ttUSHORT!(fc.offset(hd as isize + 44)) & 7) != (flags as u16 & 7) { return false; }
+      hd = find_table(fc.as_ptr(), offset, CString::new("head").unwrap().as_ptr());
+      if (ttUSHORT!(fc.as_ptr().offset(hd as isize + 44)) & 7) != (flags as u16 & 7) { return false; }
    }
 
-   nm = find_table(fc, offset, CString::new("name").unwrap().as_ptr());
+   nm = find_table(fc.as_ptr(), offset, CString::new("name").unwrap().as_ptr());
    if nm == 0 { return false; }
 
    if flags != 0 {
       // if we checked the macStyle flags, then just check the family and ignore the subfamily
-      if matchpair(fc, nm, name, nlen, 16, -1) { return true; }
-      if matchpair(fc, nm, name, nlen,  1, -1) { return true; }
-      if matchpair(fc, nm, name, nlen,  3, -1) { return true; }
+      if matchpair(fc.as_ptr(), nm, name, nlen, 16, -1) { return true; }
+      if matchpair(fc.as_ptr(), nm, name, nlen,  1, -1) { return true; }
+      if matchpair(fc.as_ptr(), nm, name, nlen,  3, -1) { return true; }
    } else {
-      if matchpair(fc, nm, name, nlen, 16, 17) { return true; }
-      if matchpair(fc, nm, name, nlen,  1,  2) { return true; }
-      if matchpair(fc, nm, name, nlen,  3, -1) { return true; }
+      if matchpair(fc.as_ptr(), nm, name, nlen, 16, 17) { return true; }
+      if matchpair(fc.as_ptr(), nm, name, nlen,  1,  2) { return true; }
+      if matchpair(fc.as_ptr(), nm, name, nlen,  3, -1) { return true; }
    }
 
    return false;
@@ -3720,19 +3732,20 @@ pub unsafe fn matches(
 //   if you use any other flag, use a font name like "Arial"; this checks
 //     the 'macStyle' header field; i don't know if fonts set this consistently
 pub unsafe fn find_matching_font(
-    font_collection: *const u8,
+    font_collection: &[u8],
     name_utf8: *const u8,
     flags: i32
-) -> i32 {
-   for i in 0.. {
-      let off: i32 = get_font_offset_for_index(font_collection, i);
-      if off < 0 { return off; }
-      if matches(font_collection as *mut u8,
-            off as u32, name_utf8 as *mut u8, flags) {
-         return off;
-      }
-   }
-   return 0;
+) -> Option<usize> {
+    for i in 0.. {
+        if let Some(offset) = get_font_offset_for_index(font_collection, i) {
+            if matches(font_collection, offset, name_utf8 as *mut u8, flags) {
+                return Some(offset);
+            }
+        } else {
+            return None;
+        }
+    }
+    None
 }
 
 // #endif // STB_TRUETYPE_IMPLEMENTATION
