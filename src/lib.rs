@@ -2475,36 +2475,30 @@ pub unsafe fn tesselate_curve(
 
 // returns number of contours
 pub unsafe fn flatten_curves(
-    vertices: *mut Vertex,
-    num_verts: isize,
+    vertices: &[Vertex],
     objspace_flatness: f32,
     contour_lengths: *mut *mut isize,
-    num_contours: *mut isize,
+    num_contours: *mut usize,
 ) -> Vec<Point> {
     let mut points: Vec<Point> = Vec::new();
 
     let objspace_flatness_squared: f32 = objspace_flatness * objspace_flatness;
-    let mut n: isize =0;
     let mut start: usize =0;
+    let mut n: isize;
 
     // count how many "moves" there are to get the contour count
-    for i in 0..num_verts {
-        if (*vertices.offset(i)).type_ == Cmd::Move {
-            n += 1;
-        }
-    }
 
-    *num_contours = n;
-    if n == 0 { return points }
+    *num_contours = vertices.iter().filter(|v| v.type_ == Cmd::Move).count();
+    if *num_contours == 0 { return points }
 
-    *contour_lengths = STBTT_malloc!(size_of::<isize>() * n as usize) as *mut isize;
+    *contour_lengths = STBTT_malloc!(size_of::<isize>() * *num_contours) as *mut isize;
 
     let mut x: f32=0.0;
     let mut y: f32=0.0;
 
     n= -1;
-    for i in 0..num_verts {
-        match (*vertices.offset(i)).type_ {
+    for vertex in vertices.iter() {
+        match vertex.type_ {
             Cmd::Move => {
                 // start the next contour
                 if n >= 0 {
@@ -2513,22 +2507,22 @@ pub unsafe fn flatten_curves(
                 n += 1;
                 start = points.len();
 
-                x = (*vertices.offset(i)).x as f32;
-                y = (*vertices.offset(i)).y as f32;
+                x = vertex.x as f32;
+                y = vertex.y as f32;
                 points.push(Point{x: x, y: y});
             }
             Cmd::Line => {
-                x = (*vertices.offset(i)).x as f32;
-                y = (*vertices.offset(i)).y as f32;
+                x = vertex.x as f32;
+                y = vertex.y as f32;
                 points.push(Point{x: x, y: y});
             }
             Cmd::Curve => {
                 tesselate_curve(&mut points, x,y,
-                    (*vertices.offset(i)).cx as f32, (*vertices.offset(i)).cy as f32,
-                    (*vertices.offset(i)).x as f32,  (*vertices.offset(i)).y as f32,
+                    vertex.cx as f32, vertex.cy as f32,
+                    vertex.x as f32,  vertex.y as f32,
                     objspace_flatness_squared, 0);
-                x = (*vertices.offset(i)).x as f32;
-                y = (*vertices.offset(i)).y as f32;
+                x = vertex.x as f32;
+                y = vertex.y as f32;
             }
         }
     }
@@ -2544,9 +2538,7 @@ pub unsafe fn rasterize(
     // allowable error of curve in pixels
     flatness_in_pixels: f32,
     // array of vertices defining shape
-    vertices: *mut Vertex,
-    // number of vertices in above array
-    num_verts: isize,
+    vertices: &[Vertex],
     // scale applied to input vertices
     scale_x: f32,
     scale_y: f32,
@@ -2560,13 +2552,13 @@ pub unsafe fn rasterize(
     invert: bool
 ) {
     let scale: f32 = if scale_x > scale_y { scale_y } else { scale_x };
-    let mut winding_count: isize = 0;
+    let mut winding_count: usize = 0;
     let mut winding_lengths: *mut isize = null_mut();
-    let windings: Vec<Point> = flatten_curves(vertices, num_verts,
+    let windings: Vec<Point> = flatten_curves(vertices,
         flatness_in_pixels / scale, &mut winding_lengths, &mut winding_count);
 
     if winding_count > 0 {
-        rasterize_(result, windings.as_ptr(), winding_lengths, winding_count,
+        rasterize_(result, windings.as_ptr(), winding_lengths, winding_count as isize,
             scale_x, scale_y, shift_x, shift_y, x_off, y_off, invert);
     }
     STBTT_free!(winding_lengths as *mut c_void);
@@ -2622,7 +2614,7 @@ pub unsafe fn get_glyph_bitmap_subpixel(
          gbm.stride = gbm.w;
 
          rasterize(&mut gbm, 0.35,
-             vertices, num_verts, scale_x, scale_y, shift_x, shift_y, bounding_box.x0, bounding_box.y0,
+             slice::from_raw_parts(vertices, num_verts as usize), scale_x, scale_y, shift_x, shift_y, bounding_box.x0, bounding_box.y0,
              true);
       }
    }
@@ -2673,7 +2665,7 @@ pub unsafe fn make_glyph_bitmap_subpixel(
    };
 
    if gbm.w != 0 && gbm.h != 0 {
-      rasterize(&mut gbm, 0.35, vertices, num_verts,
+      rasterize(&mut gbm, 0.35, slice::from_raw_parts(vertices, num_verts as usize),
           scale_x, scale_y, shift_x, shift_y, bounding_box.x0, bounding_box.y0, true);
    }
 
