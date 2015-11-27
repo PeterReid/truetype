@@ -927,11 +927,11 @@ pub fn get_font_offset_for_index(
 // going to process, then use glyph-based functions instead of the
 // codepoint-based functions.
 pub unsafe fn find_glyph_index(
-    info: *const FontInfo,
+    info: &FontInfo,
     unicode_codepoint: isize
 ) -> isize {
-   let data: *const u8 = (*info).data.as_ptr();
-   let index_map: u32 = (*info).index_map as u32;
+   let data: *const u8 = info.data.as_ptr();
+   let index_map: u32 = info.index_map as u32;
 
    let format: u16 = ttUSHORT!(data.offset(index_map as isize + 0));
    if format == 0 { // apple byte encoding
@@ -1045,7 +1045,7 @@ pub unsafe fn find_glyph_index(
 }
 
 pub unsafe fn get_codepoint_shape(
-    info: *const FontInfo,
+    info: &FontInfo,
     unicode_codepoint: isize,
      vertices: *mut *mut Vertex
 ) -> isize {
@@ -1069,19 +1069,19 @@ pub unsafe fn stbtt_setvertex(
 
 // Gets the bounding box of the visible part of the glyph, in unscaled coordinates
 pub unsafe fn get_codepoint_box(
-    info: *const FontInfo,
+    info: &FontInfo,
     codepoint: isize,
 ) -> Result<BoundingBox, Error> {
-    (*info).get_glyph_box(find_glyph_index(info,codepoint) as usize)
+    info.get_glyph_box(find_glyph_index(info,codepoint) as usize)
 }
 
 // returns non-zero if nothing is drawn for this glyph
 pub unsafe fn is_glyph_empty(
-    info: *const FontInfo,
+    info: &FontInfo,
     glyph_index: usize
 ) -> bool {
-    if let Ok(glyph_offset) = (*info).get_glyph_offset(glyph_index) {
-        let number_of_contours = ttSHORT!((*info).data.as_ptr().offset(glyph_offset as isize));
+    if let Ok(glyph_offset) = info.get_glyph_offset(glyph_index) {
+        let number_of_contours = ttSHORT!(info.data.as_ptr().offset(glyph_offset as isize));
         number_of_contours != 0
     } else {
         true
@@ -1130,16 +1130,16 @@ pub unsafe fn close_shape(
 // draws a quadratic bezier from previous endpoint to
 // its x,y, using cx,cy as the bezier control point.
 pub unsafe fn get_glyph_shape(
-    info: *const FontInfo,
+    info: &FontInfo,
     glyph_index: usize,
     pvertices: *mut *mut Vertex
 ) -> isize {
    let number_of_contours: i16;
    let end_pts_of_contours: *const u8;
-   let data: *const u8 = (*info).data.as_ptr();
+   let data: *const u8 = info.data.as_ptr();
    let mut vertices: *mut Vertex=null_mut();
    let mut num_vertices: isize = 0;
-   let g: isize = if let Ok(g) = (*info).get_glyph_offset(glyph_index) {
+   let g: isize = if let Ok(g) = info.get_glyph_offset(glyph_index) {
       g as isize
    } else {
       return 0;
@@ -1408,36 +1408,36 @@ pub unsafe fn get_glyph_shape(
 }
 
 pub unsafe fn get_glyph_hmetrics(
-    info: *const FontInfo,
+    info: &FontInfo,
     glyph_index: isize,
     advance_width: *mut isize,
     left_side_bearing: *mut isize
 ) {
-   let num_of_long_hor_metrics: u16 = ttUSHORT!((*info).data.as_ptr().offset((*info).hhea as isize + 34));
+   let num_of_long_hor_metrics: u16 = ttUSHORT!(info.data.as_ptr().offset(info.hhea as isize + 34));
    if glyph_index < num_of_long_hor_metrics as isize {
       if advance_width != null_mut() {
-          *advance_width    = ttSHORT!((*info).data.as_ptr().offset((*info).hmtx as isize + 4*glyph_index)) as isize;
+          *advance_width    = ttSHORT!(info.data.as_ptr().offset(info.hmtx as isize + 4*glyph_index)) as isize;
       }
       if left_side_bearing != null_mut() {
-          *left_side_bearing = ttSHORT!((*info).data.as_ptr().offset((*info).hmtx as isize + 4*glyph_index + 2)) as isize;
+          *left_side_bearing = ttSHORT!(info.data.as_ptr().offset(info.hmtx as isize + 4*glyph_index + 2)) as isize;
       }
    } else {
       if advance_width != null_mut() {
-          *advance_width    = ttSHORT!((*info).data.as_ptr().offset((*info).hmtx as isize + 4*(num_of_long_hor_metrics as isize -1))) as isize;
+          *advance_width    = ttSHORT!(info.data.as_ptr().offset(info.hmtx as isize + 4*(num_of_long_hor_metrics as isize -1))) as isize;
       }
       if left_side_bearing != null_mut() {
-          *left_side_bearing = ttSHORT!((*info).data.as_ptr().offset(
-              (*info).hmtx as isize + 4*num_of_long_hor_metrics as isize + 2*(glyph_index - num_of_long_hor_metrics as isize))) as isize;
+          *left_side_bearing = ttSHORT!(info.data.as_ptr().offset(
+              info.hmtx as isize + 4*num_of_long_hor_metrics as isize + 2*(glyph_index - num_of_long_hor_metrics as isize))) as isize;
       }
    }
 }
 
 pub unsafe fn get_glyph_kern_advance(
-    info: *mut FontInfo,
+    info: &FontInfo,
     glyph1: isize,
     glyph2: isize
 ) -> isize {
-   let data: *const u8 = (*info).data.as_ptr().offset((*info).kern as isize);
+   let data: *const u8 = info.data.as_ptr().offset(info.kern as isize);
    let needle: u32;
    let mut straw: u32;
    let mut l: isize;
@@ -1445,7 +1445,7 @@ pub unsafe fn get_glyph_kern_advance(
    let mut m: isize;
 
    // we only look at the first table. it must be 'horizontal' and format 0.
-   if (*info).kern == 0 {
+   if info.kern == 0 {
       return 0;
    }
    if ttUSHORT!(data.offset(2)) < 1 { // number of tables, need at least 1
@@ -1475,11 +1475,11 @@ pub unsafe fn get_glyph_kern_advance(
 
 // an additional amount to add to the 'advance' value between ch1 and ch2
 pub unsafe fn get_codepoint_kern_advance(
-    info: *mut FontInfo,
+    info: &FontInfo,
     ch1: isize,
     ch2: isize
 ) -> isize {
-   if (*info).kern == 0 { // if no kerning table, don't waste time looking up both codepoint->glyphs
+   if info.kern == 0 { // if no kerning table, don't waste time looking up both codepoint->glyphs
       return 0;
    }
    return get_glyph_kern_advance(info, find_glyph_index(info,ch1), find_glyph_index(info,ch2));
@@ -1489,7 +1489,7 @@ pub unsafe fn get_codepoint_kern_advance(
 // advanceWidth is the offset from the current horizontal position to the next horizontal position
 //   these are expressed in unscaled coordinates
 pub unsafe fn get_codepoint_hmetrics(
-    info: *const FontInfo,
+    info: &FontInfo,
     codepoint: isize,
     advance_width: *mut isize,
     left_side_bearing: *mut isize
@@ -1504,44 +1504,44 @@ pub unsafe fn get_codepoint_hmetrics(
 //   these are expressed in unscaled coordinates, so you must multiply by
 //   the scale factor for a given size
 pub unsafe fn get_font_vmetrics(
-    info: *const FontInfo,
+    info: &FontInfo,
     ascent: *mut isize,
     descent: *mut isize,
     line_gap: *mut isize
 ) {
    if ascent != null_mut() {
-       *ascent  = ttSHORT!((*info).data.as_ptr().offset((*info).hhea as isize + 4)) as isize;
+       *ascent  = ttSHORT!(info.data.as_ptr().offset(info.hhea as isize + 4)) as isize;
    }
    if descent != null_mut() {
-       *descent = ttSHORT!((*info).data.as_ptr().offset((*info).hhea as isize + 6)) as isize;
+       *descent = ttSHORT!(info.data.as_ptr().offset(info.hhea as isize + 6)) as isize;
    }
    if line_gap != null_mut() {
-       *line_gap = ttSHORT!((*info).data.as_ptr().offset((*info).hhea as isize + 8)) as isize;
+       *line_gap = ttSHORT!(info.data.as_ptr().offset(info.hhea as isize + 8)) as isize;
    }
 }
 
 // the bounding box around all possible characters
 pub unsafe fn get_font_bounding_box(
-    info: *const FontInfo,
+    info: &FontInfo,
     x0: *mut isize,
     y0: *mut isize,
     x1: *mut isize,
     y1: *mut isize
 ) {
-   *x0 = ttSHORT!((*info).data.as_ptr().offset((*info).head as isize + 36)) as isize;
-   *y0 = ttSHORT!((*info).data.as_ptr().offset((*info).head as isize + 38)) as isize;
-   *x1 = ttSHORT!((*info).data.as_ptr().offset((*info).head as isize + 40)) as isize;
-   *y1 = ttSHORT!((*info).data.as_ptr().offset((*info).head as isize + 42)) as isize;
+   *x0 = ttSHORT!(info.data.as_ptr().offset(info.head as isize + 36)) as isize;
+   *y0 = ttSHORT!(info.data.as_ptr().offset(info.head as isize + 38)) as isize;
+   *x1 = ttSHORT!(info.data.as_ptr().offset(info.head as isize + 40)) as isize;
+   *y1 = ttSHORT!(info.data.as_ptr().offset(info.head as isize + 42)) as isize;
 }
 
 // computes a scale factor to produce a font whose EM size is mapped to
 // 'pixels' tall. This is probably what traditional APIs compute, but
 // I'm not positive.
 pub unsafe fn scale_for_mapping_em_to_pixels(
-    info: *const FontInfo,
+    info: &FontInfo,
     pixels: f32
 ) -> f32 {
-   let units_per_em = ttUSHORT!((*info).data.as_ptr().offset((*info).head as isize + 18));
+   let units_per_em = ttUSHORT!(info.data.as_ptr().offset(info.head as isize + 18));
    return pixels / units_per_em as f32;
 }
 
@@ -1551,7 +1551,7 @@ pub unsafe fn scale_for_mapping_em_to_pixels(
 //
 // BITMAP RENDERING
 //
-pub unsafe fn free_shape(_info: *const FontInfo, v: *mut Vertex)
+pub unsafe fn free_shape(_info: &FontInfo, v: *mut Vertex)
 {
    STBTT_free!(v as *mut c_void);
 }
@@ -1562,7 +1562,7 @@ pub unsafe fn free_shape(_info: *const FontInfo, v: *mut Vertex)
 //
 
 pub unsafe fn get_glyph_bitmap_box_subpixel(
-    font: *const FontInfo,
+    font: &FontInfo,
     glyph: usize,
     scale_x: f32,
     scale_y: f32,
@@ -1584,7 +1584,7 @@ pub unsafe fn get_glyph_bitmap_box_subpixel(
 }
 
 pub unsafe fn get_glyph_bitmap_box(
-    font: *const FontInfo,
+    font: &FontInfo,
     glyph: usize,
     scale_x: f32,
     scale_y: f32,
@@ -1595,7 +1595,7 @@ pub unsafe fn get_glyph_bitmap_box(
 // same as stbtt_GetCodepointBitmapBox, but you can specify a subpixel
 // shift for the character
 pub unsafe fn get_codepoint_bitmap_box_subpixel(
-    font: *const FontInfo,
+    font: &FontInfo,
     codepoint: isize,
     scale_x: f32,
     scale_y: f32,
@@ -1611,7 +1611,7 @@ pub unsafe fn get_codepoint_bitmap_box_subpixel(
 // (Note that the bitmap uses y-increases-down, but the shape uses
 // y-increases-up, so CodepointBitmapBox and CodepointBox are inverted.)
 pub unsafe fn get_codepoint_bitmap_box(
-    font: *const FontInfo,
+    font: &FontInfo,
     codepoint: isize,
     scale_x: f32,
     scale_y: f32
@@ -2462,7 +2462,7 @@ pub unsafe fn free_bitmap(bitmap: *mut u8)
 }
 
 pub unsafe fn get_glyph_bitmap_subpixel(
-    info: *const FontInfo,
+    info: &FontInfo,
     mut scale_x: f32,
     mut scale_y: f32,
     shift_x: f32,
@@ -2517,7 +2517,7 @@ pub unsafe fn get_glyph_bitmap_subpixel(
 // on glyph indices instead of Unicode codepoints (for efficiency)
 
 pub unsafe fn get_glyph_bitmap(
-    info: *const FontInfo,
+    info: &FontInfo,
     scale_x: f32,
     scale_y: f32,
     glyph: isize,
@@ -2531,7 +2531,7 @@ pub unsafe fn get_glyph_bitmap(
 }
 
 pub unsafe fn make_glyph_bitmap_subpixel(
-    info: *const FontInfo,
+    info: &FontInfo,
     output: &mut [u8],
     out_w: isize,
     out_h: isize,
@@ -2564,7 +2564,7 @@ pub unsafe fn make_glyph_bitmap_subpixel(
 }
 
 pub unsafe fn make_glyph_bitmap(
-    info: *const FontInfo,
+    info: &FontInfo,
     output: &mut [u8],
     out_w: isize,
     out_h: isize,
@@ -2580,7 +2580,7 @@ pub unsafe fn make_glyph_bitmap(
 // the same as stbtt_GetCodepoitnBitmap, but you can specify a subpixel
 // shift for the character
 pub unsafe fn get_codepoint_bitmap_subpixel(
-    info: *const FontInfo,
+    info: &FontInfo,
     scale_x: f32,
     scale_y: f32,
     shift_x: f32,
@@ -2598,7 +2598,7 @@ pub unsafe fn get_codepoint_bitmap_subpixel(
 // same as stbtt_MakeCodepointBitmap, but you can specify a subpixel
 // shift for the character
 pub unsafe fn make_codepoint_bitmap_subpixel(
-    info: *const FontInfo,
+    info: &FontInfo,
     output: &mut [u8],
     out_w: isize,
     out_h: isize,
@@ -2622,7 +2622,7 @@ pub unsafe fn make_codepoint_bitmap_subpixel(
 //
 // xoff/yoff are the offset it pixel space from the glyph origin to the top-left of the bitmap
 pub unsafe fn get_codepoint_bitmap(
-    info: *const FontInfo,
+    info: &FontInfo,
     scale_x: f32,
     scale_y: f32,
     codepoint: isize,
@@ -2640,7 +2640,7 @@ pub unsafe fn get_codepoint_bitmap(
 // is clipped to out_w/out_h bytes. Call stbtt_GetCodepointBitmapBox to get the
 // width and height and positioning info for it first.
 pub unsafe fn make_codepoint_bitmap(
-    info: *const FontInfo,
+    info: &FontInfo,
     output: &mut [u8],
     out_w: isize,
     out_h: isize,
@@ -3106,7 +3106,7 @@ pub fn oversample_shift(oversample: isize) -> f32
 // rects array must be big enough to accommodate all characters in the given ranges
 pub unsafe fn pack_font_ranges_gather_rects(
     spc: *mut PackContext,
-    info: *mut FontInfo,
+    info: &FontInfo,
     ranges: *mut PackRange,
     num_ranges: isize,
     rects: *mut Rect
@@ -3116,7 +3116,7 @@ pub unsafe fn pack_font_ranges_gather_rects(
    k=0;
    for i in 0..num_ranges {
       let fh: f32 = (*ranges.offset(i)).font_size;
-      let scale: f32 = if fh > 0.0 { (*info).scale_for_pixel_height(fh) }
+      let scale: f32 = if fh > 0.0 { info.scale_for_pixel_height(fh) }
         else { scale_for_mapping_em_to_pixels(info, -fh) };
       (*ranges.offset(i)).h_oversample = (*spc).h_oversample as u8;
       (*ranges.offset(i)).v_oversample = (*spc).v_oversample as u8;
@@ -3143,7 +3143,7 @@ pub unsafe fn pack_font_ranges_gather_rects(
 // rects array must be big enough to accommodate all characters in the given ranges
 pub unsafe fn pack_font_ranges_render_into_rects(
     spc: *mut PackContext,
-    info: *mut FontInfo,
+    info: &FontInfo,
     ranges: *mut PackRange,
     num_ranges: isize,
     rects: *mut Rect
@@ -3159,7 +3159,7 @@ pub unsafe fn pack_font_ranges_render_into_rects(
    for i in 0..num_ranges {
       let fh: f32 = (*ranges.offset(i)).font_size;
       let scale: f32 = if fh > 0.0 {
-            (*info).scale_for_pixel_height(fh)
+            info.scale_for_pixel_height(fh)
           } else { scale_for_mapping_em_to_pixels(info, -fh) };
       let recip_h: f32;
       let recip_v: f32;
@@ -3457,7 +3457,7 @@ pub unsafe fn compare_utf8_to_utf16_bigendian(
 // returns results in whatever encoding you request... but note that 2-byte encodings
 // will be BIG-ENDIAN... use stbtt_CompareUTF8toUTF16_bigendian() to compare
 pub unsafe fn get_font_name_string(
-    font: *const FontInfo,
+    font: &FontInfo,
     length: *mut isize,
     platform_id: isize,
     encoding_id: isize,
@@ -3466,8 +3466,8 @@ pub unsafe fn get_font_name_string(
 ) -> *const u8 {
    let count: i32;
    let string_offset: i32;
-   let fc: *const u8 = (*font).data.as_ptr();
-   let offset = (*font).fontstart;
+   let fc: *const u8 = font.data.as_ptr();
+   let offset = font.fontstart;
    let nm: usize = find_table(fc, offset, CString::new("name").unwrap().as_ptr());
    if nm == 0 { return null(); }
 
