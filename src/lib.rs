@@ -309,8 +309,6 @@ use libc::strlen as STBTT_strlen;
 
 //   #define STBTT_strlen(x)    strlen(x)
 
-use std::ptr::copy as STBTT_memcpy;
-
 //   #define STBTT_memcpy       memcpy
 
 //   #define STBTT_memset       memset
@@ -661,6 +659,15 @@ pub enum Cmd {
 type VertexType = i16;
 #[derive(Copy, Clone)]
 pub struct Vertex {
+   x: i16,
+   y: i16,
+   cx: i16,
+   cy: i16,
+   type_: Cmd,
+}
+
+#[derive(Copy, Clone)]
+pub struct RawVertex {
    x: i16,
    y: i16,
    cx: i16,
@@ -1047,8 +1054,8 @@ pub unsafe fn find_glyph_index(
 pub unsafe fn get_codepoint_shape(
     info: &FontInfo,
     unicode_codepoint: isize,
-     vertices: *mut *mut Vertex
-) -> isize {
+    vertices: &mut Vec<Vertex>
+) {
    return get_glyph_shape(info, find_glyph_index(info, unicode_codepoint) as usize, vertices);
 }
 
@@ -1088,9 +1095,8 @@ pub unsafe fn is_glyph_empty(
     }
 }
 
-pub unsafe fn close_shape(
-    vertices: *mut Vertex,
-    mut num_vertices: isize,
+pub fn close_shape(
+    vertices: &mut Vec<Vertex>,
     was_off: isize,
     start_off: isize,
     sx: i32,
@@ -1099,25 +1105,19 @@ pub unsafe fn close_shape(
     scy: i32,
     cx: i32,
     cy: i32
-) -> isize {
+) {
    if start_off != 0 {
       if was_off != 0 {
-         stbtt_setvertex(vertices.offset(num_vertices),
-             Cmd::Curve, (cx+scx)>>1, (cy+scy)>>1, cx,cy);
-         num_vertices += 1;
+         vertices.push(Vertex{type_:Cmd::Curve, x:((cx+scx)>>1) as i16, y:((cy+scy)>>1) as i16, cx:cx as i16, cy:cy as i16});
       }
-      stbtt_setvertex(vertices.offset(num_vertices), Cmd::Curve, sx,sy,scx,scy);
-      num_vertices += 1;
+      vertices.push(Vertex{type_:Cmd::Curve, x:sx as i16, y:sy as i16, cx:scx as i16, cy: scy as i16});
    } else {
       if was_off != 0 {
-         stbtt_setvertex(vertices.offset(num_vertices), Cmd::Curve,sx,sy,cx,cy);
-         num_vertices += 1;
+         vertices.push(Vertex{type_:Cmd::Curve, x:sx as i16, y:sy as i16, cx:cx as i16, cy: cy as i16});
       } else {
-         stbtt_setvertex(vertices.offset(num_vertices), Cmd::Line,sx,sy,0,0);
-         num_vertices += 1;
+         vertices.push(Vertex{type_:Cmd::Line, x:sx as i16, y:sy as i16, cx:0, cy: 0});
       }
    }
-   return num_vertices;
 }
 
 // returns # of vertices and fills *vertices with the pointer to them
@@ -1132,20 +1132,16 @@ pub unsafe fn close_shape(
 pub unsafe fn get_glyph_shape(
     info: &FontInfo,
     glyph_index: usize,
-    pvertices: *mut *mut Vertex
-) -> isize {
+    vertices: &mut Vec<Vertex>,
+) {
    let number_of_contours: i16;
    let end_pts_of_contours: *const u8;
    let data: *const u8 = info.data.as_ptr();
-   let mut vertices: *mut Vertex=null_mut();
-   let mut num_vertices: isize = 0;
    let g: isize = if let Ok(g) = info.get_glyph_offset(glyph_index) {
       g as isize
    } else {
-      return 0;
+      return; // TODO: Err
    };
-
-   *pvertices = null_mut();
 
    number_of_contours = ttSHORT!(data.offset(g));
 
@@ -1154,11 +1150,9 @@ pub unsafe fn get_glyph_shape(
       let mut flagcount: u8;
       let ins: i32;
       let mut j: i32 =0;
-      let m: i32;
-      let n: i32;
-      let mut next_move: i32;
+      let n: usize;
+      let mut next_move: usize;
       let mut was_off: i32 =0;
-      let off: i32;
       let mut start_off: i32 =0;
       let mut x: i32;
       let mut y: i32;
@@ -1173,13 +1167,7 @@ pub unsafe fn get_glyph_shape(
       ins = ttUSHORT!(data.offset(g + 10 + number_of_contours as isize * 2)) as i32;
       points = data.offset(g + 10 + number_of_contours as isize * 2 + 2 + ins as isize);
 
-      n = 1+ttUSHORT!(end_pts_of_contours.offset(number_of_contours as isize *2-2)) as i32;
-
-      m = n + 2*number_of_contours as i32;  // a loose bound on how many vertices we might need
-      vertices = STBTT_malloc!(m as usize * size_of::<Vertex>()) as *mut Vertex;
-      if vertices == null_mut() {
-         return 0;
-      }
+      n = 1+ttUSHORT!(end_pts_of_contours.offset(number_of_contours as isize *2-2)) as usize;
 
       next_move = 0;
       flagcount=0;
@@ -1188,72 +1176,72 @@ pub unsafe fn get_glyph_shape(
       // above, shifted to the end of the array so we won't overwrite it when
       // we create our final data starting from the front
 
-      off = m - n; // starting offset for uninterpreted data, regardless of how m ends up being calculated
-
       // first load flags
+      let mut uninterpreted = vec![RawVertex{ x: 0, y: 0, cx: 0, cy: 0, flags: 0, type_: Cmd::Move }; n];
 
-      for i in 0..n {
-         if flagcount == 0 {
-            flags = *points;
-            points = points.offset(1);
-            if (flags & 8) != 0 {
-               flagcount = *points;
-               points = points.offset(1);
-            }
-         } else {
-            flagcount -= 1;
-         }
-         (*vertices.offset(off as isize +i as isize)).flags = flags;
-      }
-      // now load x coordinates
-      x=0;
-      for i in 0..n {
-         flags = (*vertices.offset(off as isize + i as isize)).flags;
-         if (flags & 2) != 0 {
-            let dx: i16 = *points as i16;
-            points = points.offset(1);
-            x += if (flags & 16) != 0 { dx as i32 } else { -dx as i32 }; // ???
-         } else {
-            if (flags & 16) == 0 {
-               x = x + BigEndian::read_i16(slice::from_raw_parts(points, 2)) as i32;
-               points = points.offset(2);
-            }
-         }
-         (*vertices.offset(off as isize +i as isize)).x = x as i16;
-      }
+      {
+          for vertex in uninterpreted.iter_mut() {
+             if flagcount == 0 {
+                flags = *points;
+                points = points.offset(1);
+                if (flags & 8) != 0 {
+                   flagcount = *points;
+                   points = points.offset(1);
+                }
+             } else {
+                flagcount -= 1;
+             }
+             vertex.flags = flags;
+          }
+          // now load x coordinates
+          x=0;
+          for vertex in uninterpreted.iter_mut() {
+             flags = vertex.flags;
+             if (flags & 2) != 0 {
+                let dx: i16 = *points as i16;
+                points = points.offset(1);
+                x += if (flags & 16) != 0 { dx as i32 } else { -dx as i32 }; // ???
+             } else {
+                if (flags & 16) == 0 {
+                   x = x + BigEndian::read_i16(slice::from_raw_parts(points, 2)) as i32;
+                   points = points.offset(2);
+                }
+             }
+             vertex.x = x as i16;
+          }
 
-      // now load y coordinates
-      y=0;
-      for i in 0..n {
-         flags = (*vertices.offset(off as isize + i as isize)).flags;
-         if (flags & 4) != 0 {
-            let dy: i16 = *points as i16;
-            points = points.offset(1);
-            y += if (flags & 32) != 0 { dy as i32 } else { -dy as i32 }; // ???
-         } else {
-            if (flags & 32) == 0 {
-               y = y + BigEndian::read_i16(slice::from_raw_parts(points, 2)) as i32;
-               points = points.offset(2);
-            }
-         }
-         (*vertices.offset(off as isize +i as isize)).y = y as i16;
+          // now load y coordinates
+          y=0;
+          for vertex in uninterpreted.iter_mut() {
+             flags = vertex.flags;
+             if (flags & 4) != 0 {
+                let dy: i16 = *points as i16;
+                points = points.offset(1);
+                y += if (flags & 32) != 0 { dy as i32 } else { -dy as i32 }; // ???
+             } else {
+                if (flags & 32) == 0 {
+                   y = y + BigEndian::read_i16(slice::from_raw_parts(points, 2)) as i32;
+                   points = points.offset(2);
+                }
+             }
+             vertex.y = y as i16;
+          }
       }
 
       // now convert them to our format
-      num_vertices=0;
       sx = 0; sy = 0;
       cx = 0; cy = 0;
       scx = 0; scy = 0;
-      let mut i_iter = (0..n).into_iter();
-      let mut i = 0;
-      while { if let Some(v) = i_iter.next() { i = v; true } else { false } } {
-         flags = (*vertices.offset(off as isize +i as isize)).flags;
-         x     = (*vertices.offset(off as isize +i as isize)).x as i32;
-         y     = (*vertices.offset(off as isize +i as isize)).y as i32;
+      let mut uninterpreted_iter = uninterpreted.into_iter().enumerate().peekable();
+
+      loop {
+         let (i, vertex) = if let Some(x) = uninterpreted_iter.next() { x } else { break; };
+         flags = vertex.flags;
+         x     = vertex.x as i32;
+         y     = vertex.y as i32;
          if next_move == i {
             if i != 0 {
-               num_vertices = close_shape(vertices,
-                   num_vertices, was_off as isize, start_off as isize, sx,sy,scx,scy,cx,cy);
+               close_shape(vertices, was_off as isize, start_off as isize, sx,sy,scx,scy,cx,cy);
             }
 
             // now start the new one
@@ -1263,60 +1251,56 @@ pub unsafe fn get_glyph_shape(
                // where we can start, and we need to save some state for when we wraparound.
                scx = x;
                scy = y;
-               if (*vertices.offset(off as isize +i as isize +1)).type_ == Cmd::Line {
-                  // next point is also a curve point, so interpolate an on-point curve
-                  sx = (x + (*vertices.offset(off as isize +i as isize +1)).x as i32) >> 1;
-                  sy = (y + (*vertices.offset(off as isize +i as isize +1)).y as i32) >> 1;
-               } else {
-                  // otherwise just use the next point as our start point
-                  sx = (*vertices.offset(off as isize +i as isize +1)).x as i32;
-                  sy = (*vertices.offset(off as isize +i as isize +1)).y as i32;
-                  i_iter.next(); // we're using point i+1 as the starting point, so skip it
+
+               match uninterpreted_iter.peek().clone() {
+                  None => { panic!("would have been out of bounds") }
+                  Some(&(_, line_point)) if line_point.type_ == Cmd::Line => {
+                      // next point is also a curve point, so interpolate an on-point curve
+                      sx = (x + (line_point.x as i32)) >> 1;
+                      sy = (y + (line_point.y as i32)) >> 1;
+                  }
+                  Some(&(_, line_point)) => {
+                      // otherwise just use the next point as our start point
+                      sx = line_point.x as i32;
+                      sy = line_point.y as i32;
+                      uninterpreted_iter.next();
+                  }
                }
             } else {
                sx = x;
                sy = y;
             }
-            stbtt_setvertex(vertices.offset(num_vertices), Cmd::Move,sx,sy,0,0);
-            num_vertices += 1;
+            vertices.push(Vertex{type_: Cmd::Move, x: sx as i16, y: sy as i16, cx: 0, cy: 0});
+
             was_off = 0;
-            next_move = 1 + ttUSHORT!(end_pts_of_contours.offset(j as isize *2)) as i32;
+            next_move = 1 + ttUSHORT!(end_pts_of_contours.offset(j as isize *2)) as usize;
             j += 1;
          } else {
             if (flags & 1) == 0 { // if it's a curve
                if was_off != 0 { // two off-curve control points in a row means interpolate an on-curve midpoint
-                  stbtt_setvertex(vertices.offset(num_vertices),
-                      Cmd::Curve, (cx+x)>>1, (cy+y)>>1, cx, cy);
-                  num_vertices += 1;
+                  vertices.push(Vertex{type_: Cmd::Curve, x: ((cx+x)>>1) as i16, y: ((cy+y)>>1) as i16, cx: cx as i16, cy: cy as i16});
                }
                cx = x;
                cy = y;
                was_off = 1;
             } else {
                if was_off != 0 {
-                  stbtt_setvertex(vertices.offset(num_vertices), Cmd::Curve, x,y, cx, cy);
-                  num_vertices += 1;
+                  vertices.push(Vertex{type_: Cmd::Curve, x:x as i16, y:y as i16, cx:cx as i16, cy:cy as i16});
                } else {
-                  stbtt_setvertex(vertices.offset(num_vertices), Cmd::Line, x,y,0,0);
-                  num_vertices += 1;
+                  vertices.push(Vertex{type_: Cmd::Line, x:x as i16, y:y as i16, cx:0, cy:0});
                }
                was_off = 0;
             }
          }
       }
-      num_vertices = close_shape(vertices, num_vertices, was_off as isize, start_off as isize, sx,sy,scx,scy,cx,cy);
+      close_shape(vertices, was_off as isize, start_off as isize, sx,sy,scx,scy,cx,cy);
    } else if number_of_contours == -1 {
       // Compound shapes.
       let mut more: isize = 1;
       let mut comp: *const u8 = data.offset(g + 10);
-      num_vertices = 0;
-      vertices = null_mut();
       while more != 0 {
          let flags: u16;
          let gidx: u16;
-         let comp_num_verts: isize;
-         let mut comp_verts: *mut Vertex = null_mut();
-         let tmp: *mut Vertex;
          let mut mtx: [f32; 6] = [1.0,0.0,0.0,1.0,0.0,0.0];
          let m: f32;
          let n: f32;
@@ -1360,38 +1344,21 @@ pub unsafe fn get_glyph_shape(
          n = STBTT_sqrt!(mtx[2]*mtx[2] + mtx[3]*mtx[3]) as f32;
 
          // Get indexed glyph.
-         comp_num_verts = get_glyph_shape(info, gidx as usize, &mut comp_verts);
-         if comp_num_verts > 0 {
+         let comp_start_index = vertices.len();
+         get_glyph_shape(info, gidx as usize, vertices);
+         if vertices.len() > comp_start_index {
             // Transform vertices.
-            for i in 0..comp_num_verts {
-               let v: *mut Vertex = comp_verts.offset(i);
+            let comp_vertices = &mut vertices[comp_start_index..];
+            for v in comp_vertices.iter_mut() {
                let mut x: VertexType;
                let mut y: VertexType;
-               x=(*v).x; y=(*v).y;
-               (*v).x = (m as f32 * (mtx[0]*x as f32 + mtx[2]*y as f32 + mtx[4])) as VertexType;
-               (*v).y = (n as f32 * (mtx[1]*x as f32 + mtx[3]*y as f32 + mtx[5])) as VertexType;
-               x=(*v).cx; y=(*v).cy;
-               (*v).cx = (m as f32 * (mtx[0]*x as f32 + mtx[2]*y as f32 + mtx[4])) as VertexType;
-               (*v).cy = (n as f32 * (mtx[1]*x as f32 + mtx[3]*y as f32 + mtx[5])) as VertexType;
+               x=v.x; y=v.y;
+               v.x = (m as f32 * (mtx[0]*x as f32 + mtx[2]*y as f32 + mtx[4])) as VertexType;
+               v.y = (n as f32 * (mtx[1]*x as f32 + mtx[3]*y as f32 + mtx[5])) as VertexType;
+               x=v.cx; y=v.cy;
+               v.cx = (m as f32 * (mtx[0]*x as f32 + mtx[2]*y as f32 + mtx[4])) as VertexType;
+               v.cy = (n as f32 * (mtx[1]*x as f32 + mtx[3]*y as f32 + mtx[5])) as VertexType;
             }
-            // Append vertices.
-            tmp = STBTT_malloc!((num_vertices+comp_num_verts) as usize *size_of::<Vertex>())
-                as *mut Vertex;
-            if tmp == null_mut() {
-               if vertices != null_mut() { STBTT_free!(vertices as *mut c_void); }
-               if comp_verts != null_mut() { STBTT_free!(comp_verts as *mut c_void); }
-               return 0;
-            }
-            if num_vertices > 0 {
-                STBTT_memcpy(tmp, vertices,
-                    num_vertices as usize *size_of::<Vertex>());
-            }
-            STBTT_memcpy(tmp.offset(num_vertices), comp_verts,
-                comp_num_verts as usize *size_of::<Vertex>());
-            if vertices != null_mut() { STBTT_free!(vertices as *mut c_void); }
-            vertices = tmp;
-            STBTT_free!(comp_verts as *mut c_void);
-            num_vertices += comp_num_verts;
          }
          // More components ?
          more = (flags & (1<<5)) as isize;
@@ -1402,9 +1369,6 @@ pub unsafe fn get_glyph_shape(
    } else {
       // numberOfCounters == 0, do nothing
    }
-
-   *pvertices = vertices;
-   return num_vertices;
 }
 
 pub unsafe fn get_glyph_hmetrics(
@@ -2473,8 +2437,8 @@ pub unsafe fn get_glyph_bitmap_subpixel(
     xoff: *mut isize,
     yoff: *mut isize
 ) -> Vec<u8> {
-    let mut vertices: *mut Vertex = null_mut();
-    let num_verts: isize = get_glyph_shape(info, glyph as usize, &mut vertices);
+    let mut vertices = Vec::new();
+    get_glyph_shape(info, glyph as usize, &mut vertices);
 
     if scale_x == 0.0 { scale_x = scale_y; }
     if scale_y == 0.0 {
@@ -2486,15 +2450,15 @@ pub unsafe fn get_glyph_bitmap_subpixel(
     shift_x, shift_y);
 
     // now we get the size
-    let w = bounding_box.x1 - bounding_box.x0; 
+    let w = bounding_box.x1 - bounding_box.x0;
     let h = bounding_box.y1 - bounding_box.y0;
 
     if w==0 || h==0 {
         return Vec::new();
     }
-    
+
     let mut pixels = vec![0u8; (w*h) as usize];
-    
+
     if width != null_mut() { *width  = w; }
     if height != null_mut() { *height = h; }
     if xoff != null_mut() { *xoff   = bounding_box.x0; }
@@ -2507,7 +2471,7 @@ pub unsafe fn get_glyph_bitmap_subpixel(
             pixels: &mut pixels[..],
         },
         0.35,
-        slice::from_raw_parts(vertices, num_verts as usize), scale_x, scale_y, shift_x, shift_y, bounding_box.x0, bounding_box.y0,
+        &vertices[..], scale_x, scale_y, shift_x, shift_y, bounding_box.x0, bounding_box.y0,
         true);
 
     pixels
@@ -2542,8 +2506,8 @@ pub unsafe fn make_glyph_bitmap_subpixel(
     shift_y: f32,
     glyph: isize
 ) {
-   let mut vertices: *mut Vertex = null_mut();
-   let num_verts: isize = get_glyph_shape(info, glyph as usize, &mut vertices);
+   let mut vertices = Vec::new();
+   get_glyph_shape(info, glyph as usize, &mut vertices);
 
    let bounding_box = get_glyph_bitmap_box_subpixel(info, glyph as usize, scale_x, scale_y,
        shift_x, shift_y);
@@ -2556,11 +2520,9 @@ pub unsafe fn make_glyph_bitmap_subpixel(
    };
 
    if gbm.w != 0 && gbm.h != 0 {
-      rasterize(&mut gbm, 0.35, slice::from_raw_parts(vertices, num_verts as usize),
+      rasterize(&mut gbm, 0.35, &vertices[..],
           scale_x, scale_y, shift_x, shift_y, bounding_box.x0, bounding_box.y0, true);
    }
-
-   STBTT_free!(vertices as *mut c_void);
 }
 
 pub unsafe fn make_glyph_bitmap(
@@ -2677,7 +2639,7 @@ pub unsafe fn bake_font_bitmap(
     for pixel in pixels.iter_mut().take((pw*ph) as usize) {
         *pixel = 0;
     }
-   
+
    x=1;
    y=1;
    bottom_y = 1;
